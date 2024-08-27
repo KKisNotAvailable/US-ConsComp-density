@@ -5,7 +5,23 @@ class Preprocess():
     def __init__(self, filename: None) -> None:
         self._filename = filename
 
-    def read_n_clean(self):
+    def read_n_clean(self, cols_to_keep: list = []):
+        '''
+        The actions done here will be based on the data type of self.__filename
+        str: does on single file
+        list: does on the list of files
+        None: all of the files in the directory
+        '''
+
+        df = pd.read_csv(self._filename, delimiter="|")
+
+        if cols_to_keep:
+            df = df[cols_to_keep]
+
+
+        return df
+
+    def deed_analysis(self):
         '''
         The actions done here will be based on the data type of self.__filename
         str: does on single file
@@ -54,9 +70,19 @@ class Preprocess():
 
         # print(df[df['SELLER NAME1'] != 'OWNER RECORD'][['SELLER NAME1', 'OWNER_1_FIRST_NAME&MI']])
         # print(df[df['SELLER NAME1'] == 'OWNER RECORD'][['SELLER NAME1', 'OWNER_1_FIRST_NAME&MI']])
-
-
         return
+
+    def check_company_list(self):
+        '''
+        This method simply serves as a exploratory analysis of 
+        the company list provided by previous research.
+        '''
+        filepath = "../Merge_Compustat&Corelogic/"
+        filename = filepath+'corelogic_clean.dta'
+        
+        comp_list = pd.read_stata(filename)
+
+        print(comp_list.columns)
 
 
 def main():
@@ -66,8 +92,8 @@ def main():
     filename = filepath+'fips-01001-UniversityofPA_Bulk_Deed.txt'
 
     p = Preprocess(filename)
-
-    p.read_n_clean()
+    #p.check_company_list()
+    # p.deed_analysis()
 
 
 if __name__ == "__main__":
