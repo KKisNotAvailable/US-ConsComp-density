@@ -75,7 +75,21 @@ class Preprocess():
             "RESALE/NEW_CONSTRUCTION" # M: re-sale, N: new construction
         ]
 
-        def simple_analysis(df: pd.DataFrame):
+        def get_data(f: str):
+            if not f.endswith(txt_extention):
+                f = f + txt_extention
+            
+            tmp_df = self._read_n_clean(
+                filename=f,
+                cols_to_keep=cols_to_keep
+            )
+
+            # tmp_df = tmp_df[tmp_df['RESALE/NEW_CONSTRUCTION'] == "N"].reset_index(drop=True)
+
+            return tmp_df
+
+        def _simple_analysis(df: pd.DataFrame):
+            # 這裡要求用的是沒有經過篩選過的資料跑才有意義
             cond_is_new = df['RESALE/NEW_CONSTRUCTION'] == "N"
             cond_owner_record = df['SELLER NAME1'] == 'OWNER RECORD'
 
@@ -93,64 +107,54 @@ class Preprocess():
             print(tmp)
             print("=====")
 
-            tmp = df.groupby(['is_new', 'PROPERTY_INDICATOR']).size().reset_index(name='counts')
-            print(tmp)
-
         txt_extention = ".txt"
+        dataframes = []
 
+        # TODO: 預計把所有工作都包到一個nested method裡，所以目前這個get_data只是過渡用
         if not files:
             for f in os.listdir(self._filepath):
                 if f.endswith(txt_extention):
-                    # do the work
-                    print(f)
+                    dataframes.append(get_data(f))
         elif isinstance(files, list):
-            # loop through "files"
             for f in files:
-                if not f.endswith(txt_extention):
-                    f = f + txt_extention
-                
-                tmp_df = self._read_n_clean(
-                    filename=f,
-                    cols_to_keep=cols_to_keep
-                )
-                simple_analysis(tmp_df)
+                dataframes.append(get_data(f))
         else:
-            print(files)
+            dataframes.append(get_data(files))
 
-        return
+        return pd.concat(dataframes, ignore_index=True)
 
-    def deed_peep(self):
+    def deed_peep(self, df: pd.DataFrame = None):
         '''
         The actions done here will be based on the data type of self.__filename
         str: does on single file
         list: does on the list of files
         None: all of the files in the directory
         '''
+        if df is None:
+            filepath = "../Corelogic/bulk_deed_fips_split/"
+            filename = filepath+'fips-01001-UniversityofPA_Bulk_Deed.txt'
 
-        filepath = "../Corelogic/bulk_deed_fips_split/"
+            df = pd.read_csv(filename, delimiter="|")
 
-        filename = filepath+'fips-01001-UniversityofPA_Bulk_Deed.txt'
+            cols_to_keep = [
+                "PCL_ID_IRIS_FRMTD", # unique key
+                "OWNER_1_LAST_NAME", # empty if is company
+                "OWNER_1_FIRST_NAME&MI", # company name
+                "BLOCK LEVEL LATITUDE",
+                "BLOCK LEVEL LONGITUDE",
+                "SITUS_CITY",
+                "SITUS_STATE",
+                "SITUS_ZIP_CODE",
+                "SELLER NAME1",
+                "SALE AMOUNT", # but after skimming throught, there are several NULL
+                "SALE DATE",
+                "RECORDING DATE",
+                "PROPERTY_INDICATOR", # residential, commercial, ...
+                "OWNER_RELATIONSHIP_RIGHTS_CODE", # not sure will keep this column
+                "RESALE/NEW_CONSTRUCTION" # M: re-sale, N: new construction
+            ]
+            df = df[cols_to_keep]
 
-        df = pd.read_csv(filename, delimiter="|")
-
-        cols_to_keep = [
-            "PCL_ID_IRIS_FRMTD", # unique key
-            "OWNER_1_LAST_NAME", # empty if is company
-            "OWNER_1_FIRST_NAME&MI", # company name
-            "BLOCK LEVEL LATITUDE",
-            "BLOCK LEVEL LONGITUDE",
-            "SITUS_CITY",
-            "SITUS_STATE",
-            "SITUS_ZIP_CODE",
-            "SELLER NAME1",
-            "SALE AMOUNT", # but after skimming throught, there are several NULL
-            "SALE DATE",
-            "RECORDING DATE",
-            "PROPERTY_INDICATOR", # residential, commercial, ...
-            "OWNER_RELATIONSHIP_RIGHTS_CODE", # not sure will keep this column
-            "RESALE/NEW_CONSTRUCTION" # M: re-sale, N: new construction
-        ]
-        df = df[cols_to_keep]
 
         cond_is_new = df['RESALE/NEW_CONSTRUCTION'] == "N"
         cond_owner_record = df['SELLER NAME1'] == 'OWNER RECORD'
@@ -205,14 +209,17 @@ def main():
     filepath = "../Corelogic/bulk_deed_fips_split/"
 
     p = Preprocess(filepath)
-    # p.check_company_list()
     file_list = [
         "fips-01001-UniversityofPA_Bulk_Deed", 
         "fips-01003-UniversityofPA_Bulk_Deed", 
         "fips-01005-UniversityofPA_Bulk_Deed"
     ]
-    p.deed_files(file_list)
-    # p.deed_peep()
+    # file_list = "fips-01001-UniversityofPA_Bulk_Deed"
+    # 想一下這個產好的資料要吐出來還是當作attribute
+    # data = p.deed_files(file_list)
+    # print(data.shape)
+
+    p.deed_peep()
 
 
 if __name__ == "__main__":
