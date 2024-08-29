@@ -1,6 +1,12 @@
 import pandas as pd
 import numpy as np
 import os
+from tqdm import tqdm
+import re
+from datetime import datetime
+import warnings
+warnings.filterwarnings("ignore")
+
 
 
 PROPERTY_INDICATOR = {
@@ -30,9 +36,21 @@ PROPERTY_INDICATOR = {
     0: "Miscellaneous"
 }
 
+CHUNK_SIZE = 1000000 # this for Deed files is about 400MB
+
 class Preprocess():
-    def __init__(self, filepath: None) -> None:
+    def __init__(self, filepath: None, log_path: str = "") -> None:
         self._filepath = filepath
+        self.__log_path = log_path
+
+        if not os.path.exists(self.__log_path):
+            with open(self.__log_path, 'w') as f:
+                pass  # Just create an empty file
+
+    def write_log(self, message):
+        """Writes a log message with a timestamp to the log file."""
+        with open(self.__log_path, 'a') as f:
+            f.write(f"{message}\n")
 
     def _read_n_clean(self, filename: str = None, cols_to_keep: list = []) -> pd.DataFrame:
         '''
@@ -44,14 +62,32 @@ class Preprocess():
             print("Please provide valid file.")
             return
         
+        match = re.search(r'\d+', filename)
+        serial_n = match.group()
+        
         filename = self._filepath + filename
 
-        df = pd.read_csv(filename, delimiter="|")
+        def handle_bad_line(bad_line):
+            to_log= f"File {serial_n} skipping line: {bad_line}"
+            self.write_log(to_log)
+            return None  # Returning None tells pandas to skip this line
 
-        if cols_to_keep:
-            df = df[cols_to_keep]
+        dfs = []
 
-        return df
+        for chunk in pd.read_csv(
+            filename, delimiter="|", 
+            chunksize=CHUNK_SIZE,
+            on_bad_lines=handle_bad_line,
+            engine='pyarrow'
+        ):
+            if cols_to_keep:
+                chunk = chunk[cols_to_keep]
+            dfs.append(chunk)
+
+        out_df = pd.concat(dfs, ignore_index=True)
+        out_df['file_serial_n'] = serial_n
+
+        return out_df
 
     def deed_files(self, files = None):
         '''
@@ -84,12 +120,13 @@ class Preprocess():
                 cols_to_keep=cols_to_keep
             )
 
-            # tmp_df = tmp_df[tmp_df['RESALE/NEW_CONSTRUCTION'] == "N"].reset_index(drop=True)
+            tmp_df = tmp_df[tmp_df['RESALE/NEW_CONSTRUCTION'] == "N"].reset_index(drop=True)
 
             return tmp_df
 
         def _simple_analysis(df: pd.DataFrame):
-            # 這裡要求用的是沒有經過篩選過的資料跑才有意義
+            # TODO: Currently no use, can be deleted.
+            # 這裡用沒有經過篩選過的資料跑才有意義
             cond_is_new = df['RESALE/NEW_CONSTRUCTION'] == "N"
             cond_owner_record = df['SELLER NAME1'] == 'OWNER RECORD'
 
@@ -112,7 +149,7 @@ class Preprocess():
 
         # TODO: 預計把所有工作都包到一個nested method裡，所以目前這個get_data只是過渡用
         if not files:
-            for f in os.listdir(self._filepath):
+            for f in tqdm(os.listdir(self._filepath), desc="Deed files"):
                 if f.endswith(txt_extention):
                     dataframes.append(get_data(f))
         elif isinstance(files, list):
@@ -130,6 +167,8 @@ class Preprocess():
         list: does on the list of files
         None: all of the files in the directory
         '''
+        # if no df provided, do the demo thing: use one of the files
+        # from path.
         if df is None:
             filepath = "../Corelogic/bulk_deed_fips_split/"
             filename = filepath+'fips-01001-UniversityofPA_Bulk_Deed.txt'
@@ -155,7 +194,8 @@ class Preprocess():
             ]
             df = df[cols_to_keep]
 
-
+        # this condition would be meaningless if use processed data
+        # since in our data reading step we filtered with this condition
         cond_is_new = df['RESALE/NEW_CONSTRUCTION'] == "N"
         cond_owner_record = df['SELLER NAME1'] == 'OWNER RECORD'
 
@@ -173,8 +213,9 @@ class Preprocess():
         print(tmp)
         print("=====")
 
-        tmp = df.groupby(['is_new', 'PROPERTY_INDICATOR']).size().reset_index(name='counts')
-        print(tmp)
+        # this result is too lengthy, so commented.
+        # tmp = df.groupby(['is_new', 'PROPERTY_INDICATOR']).size().reset_index(name='counts')
+        # print(tmp)
 
         # df = df[cond1]
 
@@ -205,10 +246,16 @@ class Preprocess():
 
 
 def main():
-
+    log_path = "./log/"
     filepath = "../Corelogic/bulk_deed_fips_split/"
 
-    p = Preprocess(filepath)
+    if not os.path.exists(log_path):
+        os.makedirs(log_path)
+
+    current_date = datetime.now().strftime("%m%d")
+    log = f'deed_{current_date}.log'
+
+    p = Preprocess(filepath=filepath, log_path=log_path+log)
     file_list = [
         "fips-01001-UniversityofPA_Bulk_Deed", 
         "fips-01003-UniversityofPA_Bulk_Deed", 
@@ -216,10 +263,11 @@ def main():
     ]
     # file_list = "fips-01001-UniversityofPA_Bulk_Deed"
     # 想一下這個產好的資料要吐出來還是當作attribute
-    # data = p.deed_files(file_list)
+    # 目前覺得吐出來好
+    data = p.deed_files()
     # print(data.shape)
 
-    p.deed_peep()
+    p.deed_peep(data)
 
 
 if __name__ == "__main__":
