@@ -4,6 +4,7 @@ import os
 from tqdm import tqdm
 import re
 from datetime import datetime
+import csv
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -74,18 +75,23 @@ class Preprocess():
 
         dfs = []
 
+        # 如果我現在對於壞的欄位先忽略，那還有需要試dask嗎
         for chunk in pd.read_csv(
             filename, delimiter="|", 
-            chunksize=CHUNK_SIZE,
-            on_bad_lines=handle_bad_line,
-            engine='pyarrow'
+            chunksize=CHUNK_SIZE, # can only work with engine = c or python
+            # on_bad_lines=handle_bad_line, # callable can only work with engine = python or pyarrow
+            on_bad_lines='skip', # skip the bad rows for now, guess there won't be many (cannot check tho)
+            engine='c',
+            quoting=csv.QUOTE_NONE
         ):
             if cols_to_keep:
                 chunk = chunk[cols_to_keep]
             dfs.append(chunk)
 
         out_df = pd.concat(dfs, ignore_index=True)
-        out_df['file_serial_n'] = serial_n
+
+        to_log= f"File {serial_n} done."
+        self.write_log(to_log)
 
         return out_df
 
@@ -97,6 +103,7 @@ class Preprocess():
         None: all of the files in the directory
         '''
         cols_to_keep = [
+            "FIPS",
             "PCL_ID_IRIS_FRMTD", # unique key
             "BLOCK LEVEL LATITUDE",
             "BLOCK LEVEL LONGITUDE",
@@ -176,6 +183,7 @@ class Preprocess():
             df = pd.read_csv(filename, delimiter="|")
 
             cols_to_keep = [
+                "FIPS",
                 "PCL_ID_IRIS_FRMTD", # unique key
                 "OWNER_1_LAST_NAME", # empty if is company
                 "OWNER_1_FIRST_NAME&MI", # company name
@@ -229,6 +237,13 @@ class Preprocess():
         # print(df[df['SELLER NAME1'] != 'OWNER RECORD'][col_to_see])
         # print(df[df['SELLER NAME1'] == 'OWNER RECORD'][col_to_see]])
         return
+    
+    def data_output(self, df: pd.DataFrame, filename: str) -> None:
+        if not filename.endswith(".csv"):
+            filename = filename + ".csv"
+        df.to_csv(f'{filename}', index=False)
+        print(f"{filename} generated.")
+        return
 
     def __check_company_list(self):
         '''
@@ -263,11 +278,12 @@ def main():
     ]
     # file_list = "fips-01001-UniversityofPA_Bulk_Deed"
     # 想一下這個產好的資料要吐出來還是當作attribute
-    # 目前覺得吐出來好
+    # 目前覺得吐出來好 (把這個preprocess當工具箱的話應該會是吐出來比較好)
     data = p.deed_files()
     # print(data.shape)
+    p.data_output(data, 'deed_stacked.csv')
 
-    p.deed_peep(data)
+    # p.deed_peep(data)
 
 
 if __name__ == "__main__":
