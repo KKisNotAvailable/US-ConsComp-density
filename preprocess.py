@@ -5,7 +5,6 @@ from tqdm import tqdm
 import re
 from datetime import datetime
 import csv # for csv.QUOTE_NONE, which ignores ' when reading csv
-import dask.dataframe as dd
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -305,39 +304,6 @@ class Preprocess():
         df.to_csv(f'{filename}', index=False)
         print(f"{filename} generated.")
         return
-    
-    def simple_analysis(self):
-        df = dd.read_csv('data/deed_stacked.csv')
-        print(df.columns)
-        
-        # check the nan distribution of the following columns
-        cols_to_clean = [
-            "SITUS_CITY", 
-            "SITUS_STATE", 
-            "SALE AMOUNT", 
-            "SALE DATE"
-        ]
-        good_counts = df[cols_to_clean].count().compute()
-        print(good_counts)
-        ttl_rows = len(df['FIPS'])
-        print(ttl_rows)
-
-        # for i, c in enumerate(cols_to_clean):
-        #     print(f"Non NA pct for {c}: {good_counts[i]*100/ttl_rows:.2f}%")
-
-        # ignore rows if SITUS_CITY, SITUS_STATE, SALE AMOUNT, SALE DATE
-        # is empty
-        
-        # df = df.dropna(subset=cols_to_clean)
-
-        # check if PCL_ID_IRIS_FRMTD is distinct
-
-
-        # group by SITUS_CITY / SITUS_STATE 
-        # 1. count cases, distinct SELLER NAME1 
-        # 2. sum "SALE AMOUNT"
-
-        # do similar action above but based on SALE YEAR
 
     def __check_company_list(self):
         '''
@@ -379,8 +345,7 @@ def tax_workflow(p: Preprocess):
     data = p.tax_files(files=file_list, filepath=filepath)
     print(data.shape)
 
-# maybe a class named workflow, take in which kind of file is being
-# processed and add a method called execute() to run the workflow
+# I'm thinking put the work flow into preprocess class
 
 def main():
     current_date = datetime.now().strftime("%m%d")
@@ -397,11 +362,7 @@ def main():
     # Generate Stacked Tax Files
     # ==========================
     # tax_workflow(p)
-
-    # =======================
-    # Test analysis with dask
-    # =======================
-    p.simple_analysis()
+    
 
 if __name__ == "__main__":
     main()
