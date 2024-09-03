@@ -4,7 +4,8 @@ import os
 from tqdm import tqdm
 import re
 from datetime import datetime
-import csv
+import csv # for csv.QUOTE_NONE, which ignores ' when reading csv
+import dask.dataframe as dd
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -224,10 +225,8 @@ class Preprocess():
 
     def deed_peep(self, df: pd.DataFrame = None):
         '''
-        The actions done here will be based on the data type of self.__filename
-        str: does on single file
-        list: does on the list of files
-        None: all of the files in the directory
+        This method served as a simple glimpse of distributions of some
+        variables.
         '''
         # if no df provided, do the demo thing: use one of the files
         # from path.
@@ -306,6 +305,39 @@ class Preprocess():
         df.to_csv(f'{filename}', index=False)
         print(f"{filename} generated.")
         return
+    
+    def simple_analysis(self):
+        df = dd.read_csv('data/deed_stacked.csv')
+        print(df.columns)
+        
+        # check the nan distribution of the following columns
+        cols_to_clean = [
+            "SITUS_CITY", 
+            "SITUS_STATE", 
+            "SALE AMOUNT", 
+            "SALE DATE"
+        ]
+        good_counts = df[cols_to_clean].count().compute()
+        print(good_counts)
+        ttl_rows = len(df['FIPS'])
+        print(ttl_rows)
+
+        # for i, c in enumerate(cols_to_clean):
+        #     print(f"Non NA pct for {c}: {good_counts[i]*100/ttl_rows:.2f}%")
+
+        # ignore rows if SITUS_CITY, SITUS_STATE, SALE AMOUNT, SALE DATE
+        # is empty
+        
+        # df = df.dropna(subset=cols_to_clean)
+
+        # check if PCL_ID_IRIS_FRMTD is distinct
+
+
+        # group by SITUS_CITY / SITUS_STATE 
+        # 1. count cases, distinct SELLER NAME1 
+        # 2. sum "SALE AMOUNT"
+
+        # do similar action above but based on SALE YEAR
 
     def __check_company_list(self):
         '''
@@ -322,15 +354,7 @@ class Preprocess():
         # print(comp_list.columns)
 
 
-def main():
-    current_date = datetime.now().strftime("%m%d")
-    log = f'deed_{current_date}.log'
-
-    p = Preprocess(log_name=log)
-
-    # ===============
-    # Test Deed Files
-    # ===============
+def deed_workflow(p: Preprocess):
     file_list = [
         "fips-01001-UniversityofPA_Bulk_Deed", 
         "fips-01003-UniversityofPA_Bulk_Deed", 
@@ -338,14 +362,14 @@ def main():
     ]
     # file_list = "fips-01001-UniversityofPA_Bulk_Deed"
     filepath = "../Corelogic/bulk_deed_fips_split/"
-    # data = p.deed_files(filepath=filepath) # 目前覺得吐出來好 (把這個preprocess當工具箱的話應該會是吐出來比較好)
-    # print(data.shape)
-    # p.data_output(data, 'deed_stacked.csv')
+    # if provide no "files", the following method would run through
+    # the filepath
+    data = p.deed_files(files=file_list, filepath=filepath) # 目前覺得吐出來好 (把這個preprocess當工具箱的話應該會是吐出來比較好)
+    print(data.shape)
     # p.deed_peep(data)
-
-    # ==============
-    # Test Tax Files
-    # ==============
+    # p.data_output(data, 'deed_stacked.csv')
+    
+def tax_workflow(p: Preprocess):
     file_list = [
         "fips-01001-UniversityofPA_Bulk_Tax", 
         "fips-01003-UniversityofPA_Bulk_Tax", 
@@ -355,6 +379,29 @@ def main():
     data = p.tax_files(files=file_list, filepath=filepath)
     print(data.shape)
 
+# maybe a class named workflow, take in which kind of file is being
+# processed and add a method called execute() to run the workflow
+
+def main():
+    current_date = datetime.now().strftime("%m%d")
+    log = f'deed_{current_date}.log'
+
+    p = Preprocess(log_name=log)
+
+    # ===========================
+    # Generate Stacked Deed Files
+    # ===========================
+    # deed_workflow(p)
+
+    # ==========================
+    # Generate Stacked Tax Files
+    # ==========================
+    # tax_workflow(p)
+
+    # =======================
+    # Test analysis with dask
+    # =======================
+    p.simple_analysis()
 
 if __name__ == "__main__":
     main()
