@@ -4,6 +4,7 @@ Merge_Compustat&Corelogic/
 NOTICE.pdf
 log/
 data/
+output/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
