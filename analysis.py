@@ -4,6 +4,7 @@ import os
 import seaborn as sns
 import geopandas as gpd
 import matplotlib.pyplot as plt
+import numpy as np
 
 from PIL import Image
 from matplotlib.patches import Patch, Circle
@@ -147,18 +148,91 @@ class Analysis():
         1. map points?
         2. current only has abbrev. of states
         '''
+
+        def translate_geometries(df, x, y, scale, rotate):
+            df.loc[:, "geometry"] = df.geometry.translate(yoff=y, xoff=x)
+            center = df.dissolve().centroid.iloc[0]
+            df.loc[:, "geometry"] = df.geometry.scale(xfact=scale, yfact=scale, origin=center)
+            df.loc[:, "geometry"] = df.geometry.rotate(rotate, origin=center)
+            return df
+        
+        def adjust_maps(df):
+            df_main_land = df[~df.STATEFP.isin(["02", "15"])]
+            df_alaska = df[df.STATEFP == "02"]
+            df_hawaii = df[df.STATEFP == "15"]
+
+            df_alaska = translate_geometries(df_alaska, 1300000, -4900000, 0.5, 32)
+            df_hawaii = translate_geometries(df_hawaii, 5400000, -1500000, 1, 24)
+
+            return pd.concat([df_main_land, df_alaska, df_hawaii])
+
         if not isinstance(filenames, list):
             filenames = [filenames]
 
         for f in filenames:
-            print(f)
+            f = "./output/" + f
+            # 這裡要改到其他地方，如果還要批量產出圖的話，目前只要畫state的
+            HHI = pd.read_csv(f)
+            # cur_hhi = 'HHI_case_cnt'
+            cur_hhi = 'HHI_sale_amt'
+            HHI = HHI[['SITUS_STATE', cur_hhi]]
+            HHI.rename(
+                columns={
+                    'SITUS_STATE': 'STUSPS',
+                    cur_hhi: 'value'
+                }, 
+                inplace=True
+            )
+
+        counties = gpd.read_file("./data/cb_2018_us_county_500k/")
+        counties = counties[~counties.STATEFP.isin(["72", "69", "60", "66", "78"])]
+        counties = counties.set_index("GEOID")
 
         states = gpd.read_file("./data/cb_2018_us_state_500k/")
         # remove "unincorporated territories":
         # "Puerto Rico", "American Samoa", "United States Virgin Islands"
         # "Guam", "Commonwealth of the Northern Mariana Islands"
-        states = states[states.STATEFP.isin(["72", "69", "60", "66", "78"])]
-        print(states['NAME'])
+        states = states[~states.STATEFP.isin(["72", "69", "60", "66", "78"])]
+
+        # map projection to be centered on United States.
+        counties = counties.to_crs("ESRI:102003")
+        states = states.to_crs("ESRI:102003")
+
+        # place Alaska and Hawaii on the bottom left side on the graph.
+        counties = adjust_maps(counties)
+        states = adjust_maps(states)
+
+        # add data with color to the states df.
+        selected_color = "#FA26A0"
+        data_breaks = [
+            (90, "#ff0000", "Top 10%"),   # Bright Red
+            (70, "#ff4d4d", "90-70%"),    # Light Red
+            (50, "#ff9999", "70-50%"),    # Lighter Red
+            (30, "#ffcccc", "50-30%"),    # Pale Red
+            (0,  "#ffe6e6", "Bottom 30%") # Very Light Red
+        ]
+
+        def create_color(county_df, data_breaks):
+            colors = []
+
+            for i, row in county_df.iterrows():
+                for p, c, _ in data_breaks:
+                    if row.value >= np.percentile(county_df.value, p):
+                        colors.append(c)
+                        break
+
+            return colors
+        
+        states = pd.merge(states, HHI, on='STUSPS', how='left')
+        states.loc[:, "color"] = create_color(states, data_breaks)
+
+        sizex = 8
+        sizey = 6
+        ax = counties.plot(edgecolor=edge_color + "55", color="None", figsize=(sizex, sizey))
+        states.plot(ax=ax, edgecolor=edge_color, color=states.color, linewidth=1)
+
+        plt.axis("off")
+        plt.show()
 
         return
     
