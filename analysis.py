@@ -34,6 +34,55 @@ class Analysis():
         if not os.path.isdir(out_path):
             os.mkdir(out_path)
 
+    def deed_analysis(self):
+        '''
+        This program is checking 
+        1. if the cities in states are unique
+        2. whether the cities in the geo data for plot is consistent with 
+           the cities we have
+        '''
+
+        def check_dup_city():
+            ddf = dd.read_csv('data/deed_stacked.csv')
+
+            cols_to_clean = [
+                "SITUS_CITY", 
+                "SITUS_STATE", 
+                "SALE AMOUNT", 
+                "SALE DATE"
+            ]
+
+            # 1. ignore rows if any of those columns is empty
+            ddf = ddf.dropna(subset=cols_to_clean)
+
+            # 2. check if the city column 'SITUS_CITY' have any duplicate
+            state_city_gp = ddf.groupby(['SITUS_STATE', 'SITUS_CITY']).size().reset_index()
+            state_city_gp = state_city_gp.compute()
+
+            # dup = state_city_gp.groupby('SITUS_CITY').size()
+            # dup = dup[dup > 1]
+            # print(dup)
+            # => so there are plenty of same city names in different states
+
+            # 2-1. actually checking one of the city: ABERDEEN, said to appear 6 times
+            dup_eg = state_city_gp[state_city_gp['SITUS_CITY'] == 'ABERDEEN']
+            print(dup_eg)
+            return
+        
+        # check the geo data
+        counties = gpd.read_file("data/cb_2018_us_county_500k/")
+        counties = counties[~counties.STATEFP.isin(["72", "69", "60", "66", "78"])]
+        counties = counties[['STATEFP', 'COUNTYFP', 'COUNTYNS', 'NAME']]
+
+        states = gpd.read_file("./data/cb_2018_us_state_500k/")
+        states = states[~states.STATEFP.isin(["72", "69", "60", "66", "78"])]
+        states = states[['STATEFP', 'STUSPS']]
+
+        counties = pd.merge(counties, states, on='STATEFP', how='left')
+        
+        cc = counties[counties['STUSPS'] == 'NJ']
+        print(cc)
+
     def deed_prep(self) -> list:
         '''
         This program would prepare the files for plotting.
@@ -147,6 +196,11 @@ class Analysis():
         plot the non yearly result on maps
         1. map points?
         2. current only has abbrev. of states
+
+        counties: ['STATEFP', 'COUNTYFP', 'COUNTYNS', 'AFFGEOID', 'GEOID', 'NAME', 'LSAD', 'ALAND',
+       'AWATER', 'geometry']
+       states: ['STATEFP', 'STATENS', 'AFFGEOID', 'GEOID', 'STUSPS', 'NAME', 'LSAD',
+       'ALAND', 'AWATER', 'geometry']
         '''
 
         def translate_geometries(df, x, y, scale, rotate):
@@ -258,9 +312,12 @@ def main():
     # maybe can set a switch to give only filenames rather than 
     # generating the whole thing
     # files = a.deed_prep()
+
+    a.deed_analysis()
+
     # agg_result_SITUS_CITY.csv -> 這個可能需要把state也留一下，不然不知道怎麼對
-    files = ['agg_result_SITUS_STATE.csv']
-    a.deed_plot(files)
+    # files = ['agg_result_SITUS_STATE.csv']
+    # a.deed_plot(files)
 
 if __name__ == "__main__":
     main()
