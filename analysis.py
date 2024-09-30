@@ -5,6 +5,7 @@ import seaborn as sns
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
+import json
 
 from PIL import Image
 from matplotlib.patches import Patch, Circle
@@ -20,11 +21,21 @@ sns.set_style({
 })
 
 '''NOTES
-COLUMNS:
+
+(don't need now..., the first column 'FIPS' is actually the counties) 
+source of US cities list (Basic ver.): https://simplemaps.com/data/us-cities
+
+DEED COLUMNS:
         ['FIPS', 'PCL_ID_IRIS_FRMTD', 'BLOCK LEVEL LATITUDE',
        'BLOCK LEVEL LONGITUDE', 'SITUS_CITY', 'SITUS_STATE', 'SITUS_ZIP_CODE',
        'SELLER NAME1', 'SALE AMOUNT', 'SALE DATE', 'RECORDING DATE',
        'PROPERTY_INDICATOR', 'RESALE/NEW_CONSTRUCTION']
+
+GEO COLUMNS:
+        counties: ['STATEFP', 'COUNTYFP', 'COUNTYNS', 'AFFGEOID', 'GEOID', 'NAME', 'LSAD', 'ALAND',
+       'AWATER', 'geometry']
+       states: ['STATEFP', 'STATENS', 'AFFGEOID', 'GEOID', 'STUSPS', 'NAME', 'LSAD',
+       'ALAND', 'AWATER', 'geometry']
 '''
 
 class Analysis():
@@ -40,9 +51,48 @@ class Analysis():
         1. if the cities in states are unique
         2. whether the cities in the geo data for plot is consistent with 
            the cities we have
-        '''
 
-        def check_dup_city():
+        STATEFP (2) + COUNTYFP (3) (from goe data) = county_fips (4 or 5) (from cities list)
+        states like CA has STATEFP "06", the 5 digit version would ignore the first 0
+        '''
+        # put all the analysis or data for check generation here as functions
+        # and since different functions might use the same data, 
+        # when first time read the data save it as class attribute, then we can save time on data reading.
+        def counties_in_state(out=True):
+            '''
+            The counties are from geo data.
+            '''
+            # check the geo data
+            counties = gpd.read_file("data/cb_2018_us_county_500k/")
+            counties = counties[~counties.STATEFP.isin(["72", "69", "60", "66", "78"])]
+            counties = counties[['STATEFP', 'COUNTYFP', 'COUNTYNS', 'NAME']]
+
+            states = gpd.read_file("./data/cb_2018_us_state_500k/")
+            states = states[~states.STATEFP.isin(["72", "69", "60", "66", "78"])]
+            states = states[['STATEFP', 'STUSPS']]
+
+            counties = pd.merge(counties, states, on='STATEFP', how='left')
+            
+            out_json = {}
+
+            for s in sorted(set(counties['STUSPS'])):
+                out_json[s] = sorted(
+                    counties.loc[counties['STUSPS'] == s, 'NAME']
+                )
+
+            if out:
+                with open(f'{self.__out_path}counties.json', 'w') as fp:
+                    json.dump(
+                        out_json, fp, 
+                        sort_keys=False, indent=4, separators=(',', ': ')
+                    )
+            else:
+                print(counties.loc[counties['STUSPS'] == "CA", ['STATEFP', 'COUNTYFP', 'NAME']])
+
+        def cities_in_state(out=True):
+            '''
+            The cities here are from our deed data.
+            '''
             ddf = dd.read_csv('data/deed_stacked.csv')
 
             cols_to_clean = [
@@ -55,35 +105,104 @@ class Analysis():
             # 1. ignore rows if any of those columns is empty
             ddf = ddf.dropna(subset=cols_to_clean)
 
-            # 2. check if the city column 'SITUS_CITY' have any duplicate
+            # 2. keep only one data per state-city pair
             state_city_gp = ddf.groupby(['SITUS_STATE', 'SITUS_CITY']).size().reset_index()
             state_city_gp = state_city_gp.compute()
 
-            # dup = state_city_gp.groupby('SITUS_CITY').size()
-            # dup = dup[dup > 1]
-            # print(dup)
-            # => so there are plenty of same city names in different states
+            # NOTE: 'ABERDEEN' has appeared in 6 states
 
-            # 2-1. actually checking one of the city: ABERDEEN, said to appear 6 times
-            dup_eg = state_city_gp[state_city_gp['SITUS_CITY'] == 'ABERDEEN']
-            print(dup_eg)
+            out_json = {}
+
+            for s in sorted(set(state_city_gp['SITUS_STATE'])):
+                out_json[s] = sorted(
+                    state_city_gp.loc[state_city_gp['SITUS_STATE'] == s, 'SITUS_CITY']
+                )
+
+            if out:
+                with open(f'{self.__out_path}cities.json', 'w') as fp:
+                    json.dump(
+                        out_json, fp, 
+                        sort_keys=False, indent=4, separators=(',', ': ')
+                    )
+
             return
+
+        def check_deed_var_distribution():
+            ddf = dd.read_csv('data/deed_stacked.csv')
+
+            ttl_rows = ddf['FIPS'].shape[0].compute() # but why len(ddf['FIPS']) won't work?
+
+            # check if PCL_ID_IRIS_FRMTD is distinct (it is not, but should it be?)
+            # unique_count = ddf['PCL_ID_IRIS_FRMTD'].nunique().compute()
+            # print(f"PCL_ID_IRIS_FRMTD is{' not' if ttl_rows != unique_count else ''} unique key.")
+            
+            # check the nan distribution of the following columns
+            cols_to_clean = [
+                "FIPS",
+                "SITUS_CITY", 
+                "SITUS_STATE", 
+                "SALE AMOUNT", 
+                "SALE DATE"
+            ]
+            good_counts = ddf[cols_to_clean].count().compute()
+            
+            print("Non NA pct for ...")
+            for i, c in enumerate(cols_to_clean):
+                print(f"  {c:<11}: {good_counts.iloc[i]*100/ttl_rows:>10.5f}%")
+
+            # print(ddf['SALE DATE'].dtypes) # int64
+
+        def check_city_list():
+            # read the state-county-city data
+            scc_map = pd.read_csv("data/simplemaps_uscities_basicv1.79/uscities.csv")
+            scc_map = scc_map[['state_id', 'county_fips', 'zips']]
+            print(scc_map.head(5))
         
-        # check the geo data
-        counties = gpd.read_file("data/cb_2018_us_county_500k/")
-        counties = counties[~counties.STATEFP.isin(["72", "69", "60", "66", "78"])]
-        counties = counties[['STATEFP', 'COUNTYFP', 'COUNTYNS', 'NAME']]
+        check_deed_var_distribution()
+        return
+    
+    def deed_prep(self):
+        '''
+        This method would prepare a deed dataset from the stacked csv for analysis.
+        Specifically, this data is stacked data grouped by year, state, fips.
+        And the value columns are the sum of sale amount and case count.
 
-        states = gpd.read_file("./data/cb_2018_us_state_500k/")
-        states = states[~states.STATEFP.isin(["72", "69", "60", "66", "78"])]
-        states = states[['STATEFP', 'STUSPS']]
+        Notice:
+        1. we do not calculate the HHI here, since we will calculate HHI for 
+           years seperated and aggregated.
+        2. the unique seller count is a little hard to present in this dataset
+           因為在不同county中也可能有同一個seller，以目前資料設計來看，這樣依state加總就會失真
+        '''
+        ddf = dd.read_csv('data/deed_stacked.csv')
 
-        counties = pd.merge(counties, states, on='STATEFP', how='left')
+        cols_to_clean = [
+            "FIPS", # = counties
+            "SITUS_STATE", # eg. CA
+            "SALE AMOUNT", 
+            "SALE DATE" # yyyymmdd, int64
+        ]
+
+        ddf = ddf[cols_to_clean]
+
+        # 1. data prep
+        #   1.1 ignore rows if any of those columns is empty
+        #   1.2 make the year column
+        ddf = ddf.dropna(subset=cols_to_clean)
+        ddf['year'] = ddf['SALE DATE'] // 10000
+
+        # 2. group by year, SITUS_STATE, FIPS
+        #   2-1. count cases
+        #   2-2. sum "SALE AMOUNT"
+
         
-        cc = counties[counties['STUSPS'] == 'NJ']
-        print(cc)
+        ddf\
+            .groupby(['year', 'SITUS_STATE', 'FIPS'])\
+            .agg(
+                case_cnt=('SALE DATE', 'count'),
+                sale_amt=('SALE AMOUNT', 'sum')
+            ).compute()
 
-    def deed_prep(self) -> list:
+    def deed_prep_old(self) -> list:
         '''
         This program would prepare the files for plotting.
         And since using dask is quite slow, the thing returned would 
@@ -91,29 +210,17 @@ class Analysis():
         '''
         ddf = dd.read_csv('data/deed_stacked.csv')
 
-        ttl_rows = ddf['FIPS'].shape[0].compute() # but why len(ddf['FIPS']) won't work?
-
-        # check if PCL_ID_IRIS_FRMTD is distinct (it is not, but should it be?)
-        # unique_count = ddf['PCL_ID_IRIS_FRMTD'].nunique().compute()
-        # print(f"PCL_ID_IRIS_FRMTD is{' not' if ttl_rows != unique_count else ''} unique key.")
-        
-        # check the nan distribution of the following columns
         cols_to_clean = [
-            "SITUS_CITY", 
-            "SITUS_STATE", 
+            "FIPS", # = counties
+            "SITUS_STATE", # eg. CA
             "SALE AMOUNT", 
-            "SALE DATE"
+            "SALE DATE" # yyyymmdd
         ]
-        # good_counts = ddf[cols_to_clean].count().compute()
-        
-        # print("Non NA pct for ...")
-        # for i, c in enumerate(cols_to_clean):
-        #     print(f"  {c:<11}: {good_counts.iloc[i]*100/ttl_rows:>10.5f}%")
 
         # 1. ignore rows if any of those columns is empty
         ddf = ddf.dropna(subset=cols_to_clean)
 
-        # 2. group by SITUS_CITY / SITUS_STATE 
+        # 2. group by FIPS / SITUS_STATE 
         #   2-1. count cases
         #   2-2. sum "SALE AMOUNT"
         #   2-3. get unique sellers
@@ -123,7 +230,7 @@ class Analysis():
         #   2-7. HHI by sale amt (per state)
 
         grouped_results = {
-            "SITUS_CITY": None, 
+            "FIPS": None, 
             "SITUS_STATE": None
         }
 
