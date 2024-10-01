@@ -142,13 +142,27 @@ class Analysis():
                 "SITUS_CITY", 
                 "SITUS_STATE", 
                 "SALE AMOUNT", 
+                "RECORDING DATE",
                 "SALE DATE"
             ]
-            good_counts = ddf[cols_to_clean].count().compute()
+            # good_counts = ddf[cols_to_clean].count().compute()
             
-            print("Non NA pct for ...")
-            for i, c in enumerate(cols_to_clean):
-                print(f"  {c:<11}: {good_counts.iloc[i]*100/ttl_rows:>10.5f}%")
+            # print("Non NA pct for ...")
+            # for i, c in enumerate(cols_to_clean):
+            #     print(f"  {c:<11}: {good_counts.iloc[i]*100/ttl_rows:>10.5f}%")
+
+            ddf = ddf[cols_to_clean]
+
+            ddf['SALE DATE'] = ddf['SALE DATE'].mask(ddf['SALE DATE'] == 0, ddf['RECORDING DATE'])
+            ddf['year'] = ddf['SALE DATE'] // 10000
+
+            # res = ddf[ddf['year'] == 0].compute()
+
+            # there are 1618508 rows with calculated year = 0???
+            res = ddf['year'].value_counts().compute().sort_index()
+            
+            print(res)
+            # print(res.head(10))
 
             # print(ddf['SALE DATE'].dtypes) # int64
 
@@ -158,10 +172,10 @@ class Analysis():
             scc_map = scc_map[['state_id', 'county_fips', 'zips']]
             print(scc_map.head(5))
         
-        check_deed_var_distribution()
+        # check_deed_var_distribution()
         return
     
-    def deed_prep(self):
+    def deed_prep(self, is_yearly=True, gen_data=False):
         '''
         This method would prepare a deed dataset from the stacked csv for analysis.
         Specifically, this data is stacked data grouped by year, state, fips.
@@ -171,14 +185,16 @@ class Analysis():
         1. we do not calculate the HHI here, since we will calculate HHI for 
            years seperated and aggregated.
         2. the unique seller count is a little hard to present in this dataset
-           因為在不同county中也可能有同一個seller，以目前資料設計來看，這樣依state加總就會失真
+           因為在同state不同county中也可能有同一個seller, 以目前資料設計來看, 這樣依state加總就會失真
         '''
         ddf = dd.read_csv('data/deed_stacked.csv')
 
         cols_to_clean = [
             "FIPS", # = counties
             "SITUS_STATE", # eg. CA
+            "SELLER NAME1",
             "SALE AMOUNT", 
+            "RECORDING DATE", # yyyymmdd, int64
             "SALE DATE" # yyyymmdd, int64
         ]
 
@@ -186,21 +202,95 @@ class Analysis():
 
         # 1. data prep
         #   1.1 ignore rows if any of those columns is empty
-        #   1.2 make the year column
+        #   1.2 fill the 'SALE DATE' when 0 with 'RECORDING DATE'
+        #   1.3 make the 'year' column (opt.)
+        #   1.3 (cont.) ignore the rows with 'year' == 0, 
+        #       should be around 5831 after combining SALE and RECORDING
         ddf = ddf.dropna(subset=cols_to_clean)
-        ddf['year'] = ddf['SALE DATE'] // 10000
+        ddf['SALE DATE'] = ddf['SALE DATE'].mask(ddf['SALE DATE'] == 0, ddf['RECORDING DATE'])
+
+        if is_yearly:
+            ddf['year'] = ddf['SALE DATE'] // 10000
+            ddf = ddf[ddf['year'] != 0].reset_index(drop=True)
+            pre_group_base = ['year']
+        else:
+            pre_group_base = []
 
         # 2. group by year, SITUS_STATE, FIPS
         #   2-1. count cases
         #   2-2. sum "SALE AMOUNT"
-
         
-        ddf\
-            .groupby(['year', 'SITUS_STATE', 'FIPS'])\
-            .agg(
-                case_cnt=('SALE DATE', 'count'),
-                sale_amt=('SALE AMOUNT', 'sum')
-            ).compute()
+        grouped_results = {
+            "FIPS": None, 
+            "SITUS_STATE": None
+        }
+
+        for c in grouped_results.keys():
+            group_base = pre_group_base + [c]
+
+            to_cat = [
+                ddf.groupby(group_base)\
+                    .agg(
+                        case_cnt=('SALE DATE', 'count'),
+                        sale_amt=('SALE AMOUNT', 'sum')
+                    )\
+                    .compute(),
+                # since the following is a series, no need to specify column when renaming
+                ddf.groupby(group_base)['SELLER NAME1']\
+                    .nunique()\
+                    .rename('uniq_seller_cnt')\
+                    .compute()
+            ]
+            
+            # for computing Herfindahl-Hirschman Index
+            full_list = ddf.groupby(group_base + ['SELLER NAME1'])\
+                .agg(
+                    case_cnt=('SALE DATE', 'count'),
+                    sale_amt=('SALE AMOUNT', 'sum')
+                )\
+                .reset_index()\
+                .compute()
+            
+            TOP_N = 50 # defined in HHI
+            # since 'full_list' is not large, using apply is reasonable
+            # top 50 case_cnt and sale_amt
+            # NOTE: grp means the groups during the group by process, 
+            #       we can treat each of them as a pd.series and apply operations accordingly
+            to_cat.extend([
+                full_list.groupby(group_base)['case_cnt']\
+                    .apply(lambda grp: grp.nlargest(TOP_N).sum())\
+                    .rename(f'top_{TOP_N}_case_cnt'),
+                full_list.groupby(group_base)['sale_amt']\
+                    .apply(lambda grp: grp.nlargest(TOP_N).sum())\
+                    .rename(f'top_{TOP_N}_sale_amt')
+            ])
+            # HHI = sum((x_i/X)^2), notice the base is top 50
+            to_cat.extend([
+                full_list.groupby(group_base)['case_cnt']\
+                    .apply(
+                        lambda grp: sum((grp.nlargest(TOP_N) / grp.nlargest(TOP_N).sum()) ** 2)
+                    )\
+                    .rename('HHI_case_cnt'),
+                full_list.groupby(group_base)['sale_amt']\
+                    .apply(
+                        lambda grp: sum((grp.nlargest(TOP_N) / grp.nlargest(TOP_N).sum()) ** 2)
+                    )\
+                    .rename('HHI_sale_amt')
+            ])
+            
+            # cat horizontally
+            grouped_results[c] = pd.concat(to_cat, axis=1).reset_index()\
+                .sort_values(by=group_base, ascending=[True] * len(group_base))
+            
+        if gen_data:
+            for c, res in grouped_results.items():
+                fname = f"agg_result_{c}.csv"
+                if is_yearly:
+                    fname = 'yearly_' + fname
+                self.file_out(df=res, filename=fname)
+        else:
+            return "maybe return the dataframe?"
+        return
 
     def deed_prep_old(self) -> list:
         '''
@@ -413,17 +503,18 @@ def main():
 
     a = Analysis()
 
-    # =======================
-    # Test analysis with dask
-    # =======================
-    # maybe can set a switch to give only filenames rather than 
-    # generating the whole thing
-    # files = a.deed_prep()
+    # =========
+    #  Testing
+    # =========
+    # a.deed_analysis()
 
-    a.deed_analysis()
+    # =====================================
+    #  Generates the HHI data for plotting
+    # =====================================
+    # a.deed_prep(is_yearly=True, gen_data=True)
+    # a.deed_prep(is_yearly=False, gen_data=True)
 
-    # agg_result_SITUS_CITY.csv -> 這個可能需要把state也留一下，不然不知道怎麼對
-    # files = ['agg_result_SITUS_STATE.csv']
+    # files = ['agg_result_SITUS_STATE.csv'] # 'agg_result_FIPS.csv'
     # a.deed_plot(files)
 
 if __name__ == "__main__":
