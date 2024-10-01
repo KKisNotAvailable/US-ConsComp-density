@@ -172,6 +172,7 @@ class Analysis():
             scc_map = scc_map[['state_id', 'county_fips', 'zips']]
             print(scc_map.head(5))
         
+
         # check_deed_var_distribution()
         return
     
@@ -292,113 +293,21 @@ class Analysis():
             return "maybe return the dataframe?"
         return
 
-    def deed_prep_old(self) -> list:
-        '''
-        This program would prepare the files for plotting.
-        And since using dask is quite slow, the thing returned would 
-        be filenames rather than dataframe.
-        '''
-        ddf = dd.read_csv('data/deed_stacked.csv')
-
-        cols_to_clean = [
-            "FIPS", # = counties
-            "SITUS_STATE", # eg. CA
-            "SALE AMOUNT", 
-            "SALE DATE" # yyyymmdd
-        ]
-
-        # 1. ignore rows if any of those columns is empty
-        ddf = ddf.dropna(subset=cols_to_clean)
-
-        # 2. group by FIPS / SITUS_STATE 
-        #   2-1. count cases
-        #   2-2. sum "SALE AMOUNT"
-        #   2-3. get unique sellers
-        #   2-4. top 50 seller's case count (per state)
-        #   2-5. top 50 seller's sale amt (per state)
-        #   2-6. HHI by case count (per state)
-        #   2-7. HHI by sale amt (per state)
-
-        grouped_results = {
-            "FIPS": None, 
-            "SITUS_STATE": None
-        }
-
-        for c in grouped_results.keys():
-            to_cat = [
-                ddf.groupby(c)\
-                    .agg(
-                        case_cnt=('SALE DATE', 'count'),
-                        sale_amt=('SALE AMOUNT', 'sum')
-                    )\
-                    .compute(),
-                # since the following is a series, no need to specify column when renaming
-                ddf.groupby(c)['SELLER NAME1']\
-                    .nunique()\
-                    .rename('uniq_seller_cnt')\
-                    .compute()
-            ]
-            
-            # for computing Herfindahl-Hirschman Index
-            full_list = ddf.groupby([c, 'SELLER NAME1'])\
-                .agg(
-                    case_cnt=('SALE DATE', 'count'),
-                    sale_amt=('SALE AMOUNT', 'sum')
-                )\
-                .reset_index()\
-                .compute()
-            
-            TOP_N = 50 # defined in HHI
-            # since 'full_list' is not large, using apply is reasonable
-            # top 50 case_cnt and sale_amt
-            to_cat.extend([
-                full_list.groupby(c)['case_cnt']\
-                    .apply(lambda grp: grp.nlargest(TOP_N).sum())\
-                    .rename(f'top_{TOP_N}_case_cnt'),
-                full_list.groupby(c)['sale_amt']\
-                    .apply(lambda grp: grp.nlargest(TOP_N).sum())\
-                    .rename(f'top_{TOP_N}_sale_amt')
-            ])
-            # HHI = sum((x_i/X)^2)
-            to_cat.extend([
-                full_list.groupby(c)['case_cnt']\
-                    .apply(
-                        lambda grp: sum((grp.nlargest(TOP_N) / grp.nlargest(TOP_N).sum()) ** 2)
-                    )\
-                    .rename('HHI_case_cnt'),
-                full_list.groupby(c)['sale_amt']\
-                    .apply(
-                        lambda grp: sum((grp.nlargest(TOP_N) / grp.nlargest(TOP_N).sum()) ** 2)
-                    )\
-                    .rename('HHI_sale_amt')
-            ])
-            
-            grouped_results[c] = pd.concat(to_cat, axis=1).reset_index() # horizontally
-            
-        files_out = []
-        for c, res in grouped_results.items():
-            fname = f"agg_result_{c}.csv"
-            files_out.append(fname)
-            self.file_out(df=res, filename=fname)
-
-        # do similar action above but based on SALE YEAR
-        # maybe the plotting can be animated? 
-        # (even is the plotting for yearly possible?)
-
-        return files_out
     
-    def deed_plot(self, filenames):
+    def deed_plot(self, filenames, save_fig=False, hhi_base='sale_amt'):
         '''
         REF: https://dev.to/oscarleo/how-to-create-data-maps-of-the-united-states-with-matplotlib-p9i
         plot the non yearly result on maps
         1. map points?
         2. current only has abbrev. of states
 
-        counties: ['STATEFP', 'COUNTYFP', 'COUNTYNS', 'AFFGEOID', 'GEOID', 'NAME', 'LSAD', 'ALAND',
-       'AWATER', 'geometry']
-       states: ['STATEFP', 'STATENS', 'AFFGEOID', 'GEOID', 'STUSPS', 'NAME', 'LSAD',
-       'ALAND', 'AWATER', 'geometry']
+        TODO: need to change this to be able to plot both state and counties
+
+        hhi_base: 'sale_amt' or 'case_cnt'
         '''
+        if not hhi_base in ['sale_amt', 'case_cnt']:
+            print("Please provide a valid HHI base, either sale_amt or case_cnt")
+            return
 
         def translate_geometries(df, x, y, scale, rotate):
             df.loc[:, "geometry"] = df.geometry.translate(yoff=y, xoff=x)
@@ -421,12 +330,11 @@ class Analysis():
             filenames = [filenames]
 
         for f in filenames:
-            f = "./output/" + f
-            # 這裡要改到其他地方，如果還要批量產出圖的話，目前只要畫state的
+            f = self.__out_path + f
             HHI = pd.read_csv(f)
-            # cur_hhi = 'HHI_case_cnt'
-            cur_hhi = 'HHI_sale_amt'
-            HHI = HHI[['SITUS_STATE', cur_hhi]]
+            cur_hhi = 'HHI_sale_amt' if hhi_base == 'sale_amt' else 'HHI_case_cnt'
+            keep_cols = ['SITUS_STATE', cur_hhi, 'case_cnt']
+            HHI = HHI[keep_cols]
             HHI.rename(
                 columns={
                     'SITUS_STATE': 'STUSPS',
@@ -435,11 +343,11 @@ class Analysis():
                 inplace=True
             )
 
-        counties = gpd.read_file("./data/cb_2018_us_county_500k/")
+        counties = gpd.read_file("data/cb_2018_us_county_500k/")
         counties = counties[~counties.STATEFP.isin(["72", "69", "60", "66", "78"])]
         counties = counties.set_index("GEOID")
 
-        states = gpd.read_file("./data/cb_2018_us_state_500k/")
+        states = gpd.read_file("data/cb_2018_us_state_500k/")
         # remove "unincorporated territories":
         # "Puerto Rico", "American Samoa", "United States Virgin Islands"
         # "Guam", "Commonwealth of the Northern Mariana Islands"
@@ -454,7 +362,7 @@ class Analysis():
         states = adjust_maps(states)
 
         # add data with color to the states df.
-        selected_color = "#FA26A0"
+        low_case_cnt_color = "grey"
         data_breaks = [
             (90, "#ff0000", "Top 10%"),   # Bright Red
             (70, "#ff4d4d", "90-70%"),    # Light Red
@@ -477,13 +385,22 @@ class Analysis():
         states = pd.merge(states, HHI, on='STUSPS', how='left')
         states.loc[:, "color"] = create_color(states, data_breaks)
 
+        # if 'case_cnt' is smaller than threshold, we set its color to 'low_case_cnt_color'
+        threshold = 30
+        states.loc[states['case_cnt'] < threshold, 'color'] = low_case_cnt_color
+
         sizex = 8
         sizey = 6
         ax = counties.plot(edgecolor=edge_color + "55", color="None", figsize=(sizex, sizey))
         states.plot(ax=ax, edgecolor=edge_color, color=states.color, linewidth=1)
 
         plt.axis("off")
-        plt.show()
+
+        if save_fig:
+            pass
+            # do the saving thing
+        else:
+            plt.show()
 
         return
     
@@ -500,13 +417,12 @@ class Analysis():
 
 
 def main():
-
     a = Analysis()
 
     # =========
     #  Testing
     # =========
-    # a.deed_analysis()
+    a.deed_analysis()
 
     # =====================================
     #  Generates the HHI data for plotting
@@ -514,8 +430,18 @@ def main():
     # a.deed_prep(is_yearly=True, gen_data=True)
     # a.deed_prep(is_yearly=False, gen_data=True)
 
-    # files = ['agg_result_SITUS_STATE.csv'] # 'agg_result_FIPS.csv'
-    # a.deed_plot(files)
+    # ==========
+    #  plotting
+    # ==========
+    # TODO: check 那些太少的州真的在地圖上對的到嗎 & 那些太少的州叫啥名
+    files = ['agg_result_SITUS_STATE.csv'] # 'agg_result_FIPS.csv'
+    a.deed_plot(files, save_fig=False, hhi_base='sale_amt')
+
+    # ===============
+    #  Wild Thoughts
+    # ===============
+    # so I'm thinking maybe we could do the animation of yearly HHI heatmap
+    # change since some 1970s?
 
 if __name__ == "__main__":
     main()
