@@ -14,10 +14,6 @@ from matplotlib.patches import Patch, Circle
 edge_color = "#30011E"
 background_color = "#fafafa"
 
-
-
-
-
 sns.set_style({
     "font.family": "serif",
     "figure.facecolor": background_color,
@@ -25,7 +21,6 @@ sns.set_style({
 })
 
 '''NOTES
-
 (don't need now..., the first column 'FIPS' is actually the counties) 
 source of US cities list (Basic ver.): https://simplemaps.com/data/us-cities
 
@@ -43,11 +38,16 @@ GEO COLUMNS:
 '''
 
 class Analysis():
-    def __init__(self, out_path: str = "./output/") -> None:
+    def __init__(self, out_path: str = "./output/", hhi_base='sale_amt') -> None:
         self.__out_path = out_path
+        self.hhi_base = hhi_base
         self.threshold = 20
         self.sizex = 16
         self.sizey = 12
+
+        if not hhi_base in ['sale_amt', 'case_cnt']:
+            print("Please provide a valid HHI base, either 'sale_amt' or 'case_cnt'")
+            # maybe trigger some error here, just find a way to terminate the code.
 
         if not os.path.isdir(out_path):
             os.mkdir(out_path)
@@ -323,7 +323,7 @@ class Analysis():
         return
 
     
-    def deed_plot_heat_map(self, filename, scale='states', hhi_base='sale_amt', save_fig=False):
+    def deed_plot_heat_map(self, filename, scale='states', save_fig=False):
         '''
         REF: https://dev.to/oscarleo/how-to-create-data-maps-of-the-united-states-with-matplotlib-p9i
         plot the non yearly result on maps
@@ -331,13 +331,7 @@ class Analysis():
         2. current only has abbrev. of states
 
         TODO: need to change this to be able to plot both state and counties
-
-        hhi_base: 'sale_amt' or 'case_cnt'
-        '''
-        if not hhi_base in ['sale_amt', 'case_cnt']:
-            print("Please provide a valid HHI base, either 'sale_amt' or 'case_cnt'")
-            return
-        
+        '''        
         if not scale in ['states', 'counties']:
             print("Please state a valid scale, either 'states' or 'counties'")
             return
@@ -362,7 +356,7 @@ class Analysis():
         f = self.__out_path + filename # TODO: should change the way of writing this
         HHI = pd.read_csv(f) # or maybe we can combine the scale indicator with the filename
 
-        cur_hhi = 'HHI_sale_amt' if hhi_base == 'sale_amt' else 'HHI_case_cnt'
+        cur_hhi = 'HHI_sale_amt' if self.hhi_base == 'sale_amt' else 'HHI_case_cnt'
         cur_scale = 'STUSPS' if scale == 'states' else 'FIPS'
         scale_new_name = 'STUSPS' if scale == 'states' else 'GEOID'
 
@@ -423,7 +417,8 @@ class Analysis():
         to_plot.loc[:, "color"] = create_color(to_plot, data_breaks, target='HHI')
 
         # if 'case_cnt' is smaller than threshold, we set its color to 'low_case_cnt_color'
-        to_plot.loc[to_plot['case_cnt'] < self.threshold, 'color'] = low_case_cnt_color
+        cur_thresh = self.threshold
+        to_plot.loc[to_plot['case_cnt'] < cur_thresh, 'color'] = low_case_cnt_color
 
         ax = counties.plot(edgecolor=edge_color + "55", color="None", figsize=(self.sizex, self.sizey))
         to_plot.plot(ax=ax, edgecolor=edge_color, color=to_plot.color, linewidth=0.5)
@@ -436,7 +431,7 @@ class Analysis():
             plt.show()
         return
     
-    def deed_plot_time_series(self, filename, hhi_base='sale_amt', save_fig=False):
+    def deed_plot_time_series(self, filename, save_fig=False):
         '''
         This function only considers plotting for all the states, 
         since including all the counties in one plot would be chaos.
@@ -444,17 +439,13 @@ class Analysis():
         Also this function might also support plotting for a given state or county. 
         (the corresponding data shold be provided though)
         '''
-        # TODO: might want to make this hhs_base as the class attribute
-        if not hhi_base in ['sale_amt', 'case_cnt']:
-            print("Please provide a valid HHI base, either 'sale_amt' or 'case_cnt'")
-            return
-
         f = self.__out_path + filename
         df = pd.read_csv(f)
 
+        cur_tresh = self.threshold
         df = df[df['year'] >= 1987] # since 1987 差不多HHI趨於穩定，也是FRED資料庫S&P CoreLogic Case-Shiller U.S. National Home Price Index 的起始點
-        df = df[df['case_cnt'] >= self.threshold]
-        cur_hhi = 'HHI_sale_amt' if hhi_base == 'sale_amt' else 'HHI_case_cnt'
+        df = df[df['case_cnt'] >= cur_tresh] # 把一些量太少的年份/row踢掉
+        cur_hhi = 'HHI_sale_amt' if self.hhi_base == 'sale_amt' else 'HHI_case_cnt'
 
         # Define the full range of years expected in the data
         full_years = np.arange(df['year'].min(), df['year'].max() + 1)
@@ -470,7 +461,7 @@ class Analysis():
             # Reindex to include all years, filling missing HHI with NaN
             group = group.set_index('year').reindex(full_years).reset_index()
             group['state'] = state  # Refill the state column
-            group[cur_hhi] = group[cur_hhi].interpolate()  # Interpolate missing HHI values
+            group[cur_hhi] = group[cur_hhi].interpolate()  # Interpolate missing HHI values (dropped in previous step)
 
             # Plot the reindexed and interpolated data
             ax.plot(group['year'], group[cur_hhi], label=state, marker='o', color=state_colors[state])
@@ -486,6 +477,46 @@ class Analysis():
             plt.savefig(f"{self.__out_path}state_scatter.svg", format="svg")
         else:
             plt.show()
+        return
+    
+    def deep_plot_scatter(self, start_year, end_year, filename):
+        '''
+        This function plots the scatter plot of HHI, with x-axis being the county-level HHI
+        and the y-axis being the house price change.
+
+        Currently, since we have only the aggregated case count and sale amt
+        for counties, we assume all the properties have the same size, and use 
+        the average sale value as the housing price for each county.
+        Still, we'll ignore the data with limited case count to avoided biased HHI.
+        '''
+        # us_hpi = pd.read_csv("data/USSTHPI.csv")
+
+        df = pd.read_csv(self.__out_path+filename)
+        if 'FIPS' in filename:
+            cur_scale = 'FIPS'
+        else:
+            cur_scale = 'STUSPS'
+
+        # 1. make the county/state column
+        sub_df = pd.DataFrame(sorted(set(df[cur_scale])), columns=[cur_scale])
+
+        # 2. append the selected years' data to the smaller dataframe
+        hhi_col = f'HHI_{self.hhi_base}'
+        cols = ['case_cnt', 'sale_amt', hhi_col]
+        year_data = {start_year: 0, end_year: 0}
+        for y in year_data.keys():
+            year_data[y] = df.loc[df['year'] == y, cols].reset_index(drop=True)
+
+        # 3. clean the data: by case count & if there are any empty value.
+
+        # 4. calculate the average price for start and end year & the chg%
+
+        print(sub_df)
+
+        # 4. plot the percetage change with HHI as the scatter plot, 
+        #    can consider add legend
+
+
         return
 
     def file_out(self, df, filename: str) -> None:
@@ -526,17 +557,25 @@ def main():
     #     a.deed_plot_heat_map(file, save_fig=True, hhi_base='sale_amt', scale=s)
 
     # 2. draw time series of states from 1987
-    file = 'yearly_agg_result_STATEFP.csv'
-    a.deed_plot_time_series(file, hhi_base='sale_amt', save_fig=True)
+    # file = 'yearly_agg_result_STATEFP.csv'
+    # a.deed_plot_time_series(file, hhi_base='sale_amt', save_fig=True)
 
     # 3. scatter plot of HHI (x-axis) and price change (y-axis)
-    
+    # change rate from 2006 to 2012 and 2012 to 2020
+    file = "yearly_agg_result_FIPS.csv"
+    a.deep_plot_scatter(start_year=2006, end_year=2012, filename=file)
+    # a.deep_plot_scatter(start_year=2012, end_year=2020, filename=file)
+
 
     # ===============
     #  Wild Thoughts
     # ===============
     # so I'm thinking maybe we could do the animation of yearly HHI heatmap
     # change since some 1987?
+
+    # seller's market and buyer's market
+    # https://fred.stlouisfed.org/series/PRIINCCOU18163
+    # https://fred.stlouisfed.org/series/PRIREDCOU18163
 
 if __name__ == "__main__":
     main()
