@@ -190,11 +190,19 @@ class Analysis():
         # check_abbreviation()
         return
     
-    def deed_prep(self, is_yearly=True, gen_data=False):
+    def deed_prep(self, is_yearly=True, gen_data=False, period=[], scale=""):
         '''
         This method would prepare a deed dataset from the stacked csv for analysis.
         Specifically, this data is stacked data grouped by year, state, fips.
         And the value columns are the sum of sale amount and case count.
+
+        Parameters
+        ----------
+        is_yearly:
+        gen_data:
+        period:
+        scale: str.
+            can be "states", "counties", or "" (will include both)
 
         Notice:
         1. we do not calculate the HHI here, since we will calculate HHI for 
@@ -219,29 +227,40 @@ class Analysis():
         #   1.1 ignore rows if any of those columns is empty
         #   1.2 make the STATEFP column, since there are some typo of SITUS_STATE
         #   1.3 fill the 'SALE DATE' when 0 with 'RECORDING DATE'
-        #   1.4 make the 'year' column (opt.)
-        #   1.4 (cont.) ignore the rows with 'year' == 0, 
-        #       should be around 5831 after combining SALE and RECORDING
+        #   1.4 make the 'year' column 
+        #       (opt.) ignore the rows with 'year' == 0, 
+        #              should be around 5831 after combining SALE and RECORDING
+        #   1.5 (opt.) when period provided, filter the data to contain only the period
+
         ddf = ddf.dropna(subset=cols_to_clean)
+
         ddf['STATEFP'] = ddf['FIPS'].astype(str).str.zfill(5).str[:2]
 
         ddf['SALE DATE'] = ddf['SALE DATE'].mask(ddf['SALE DATE'] == 0, ddf['RECORDING DATE'])
 
+        ddf['year'] = ddf['SALE DATE'] // 10000
+        ddf = ddf[ddf['year'] != 0].reset_index(drop=True)
         if is_yearly:
-            ddf['year'] = ddf['SALE DATE'] // 10000
-            ddf = ddf[ddf['year'] != 0].reset_index(drop=True)
             pre_group_base = ['year']
         else:
             pre_group_base = []
+
+        if period:
+            s, e = period
+            ddf = ddf[ddf['year'].between(s, e)]
 
         # 2. group by year, STATEFP, FIPS
         #   2-1. count cases
         #   2-2. sum "SALE AMOUNT"
         
-        grouped_results = {
-            "FIPS": None, 
-            "STATEFP": None
-        }
+        if not scale:
+            grouped_results = {
+                "FIPS": None, 
+                "STATEFP": None
+            }
+        else:
+            scale_col = "FIPS" if scale == 'counties' else "STATEFP"
+            grouped_results = {scale_col: None}
 
         for c in grouped_results.keys():
             group_base = pre_group_base + [c]
@@ -269,7 +288,7 @@ class Analysis():
                 .reset_index()\
                 .compute()
             
-            TOP_N = 50 # defined in HHI
+            TOP_N = 50 # defined by HHI
             # since 'full_list' is not large, using apply is reasonable
             # top 50 case_cnt and sale_amt
             # NOTE: grp means the groups during the group by process, 
@@ -296,7 +315,7 @@ class Analysis():
                     .rename('HHI_sale_amt')
             ])
             
-            # cat horizontally
+            # concat horizontally
             grouped_results[c] = pd.concat(to_cat, axis=1).reset_index()\
                 .sort_values(by=group_base, ascending=[True] * len(group_base))
             
@@ -311,6 +330,8 @@ class Analysis():
                     tmp = tmp[['year'] + [col for col in tmp.columns if col != 'year']]
 
                 grouped_results[c] = tmp
+                # 這裡可以考慮把grouped_results 裡的 'STATEFP' 刪掉換成 'STUSPS' 
+                # (for consistancy with other functions)
             
         if gen_data:
             for c, res in grouped_results.items():
@@ -319,7 +340,9 @@ class Analysis():
                     fname = 'yearly_' + fname
                 self.file_out(df=res, filename=fname)
         else:
-            return "maybe return the dataframe?"
+            if not scale:
+                return grouped_results # this is a dict of dfs
+            return grouped_results['FIPS'] if scale == 'counties' else grouped_results['STATEFP']
         return
 
     
@@ -474,12 +497,12 @@ class Analysis():
         plt.grid()
 
         if save_fig:
-            plt.savefig(f"{self.__out_path}state_scatter.svg", format="svg")
+            plt.savefig(f"{self.__out_path}state_time_series.svg", format="svg")
         else:
             plt.show()
         return
     
-    def deep_plot_scatter(self, start_year, end_year, filename):
+    def deep_plot_scatter(self, period, filename, filter_outlier=False, save_fig=False):
         '''
         This function plots the scatter plot of HHI, with x-axis being the county-level HHI
         and the y-axis being the house price change.
@@ -488,33 +511,88 @@ class Analysis():
         for counties, we assume all the properties have the same size, and use 
         the average sale value as the housing price for each county.
         Still, we'll ignore the data with limited case count to avoided biased HHI.
+
+        Parameters
+        ----------
+        period: [start_year, end_year]
         '''
         # us_hpi = pd.read_csv("data/USSTHPI.csv")
 
-        df = pd.read_csv(self.__out_path+filename)
-        if 'FIPS' in filename:
-            cur_scale = 'FIPS'
-        else:
-            cur_scale = 'STUSPS'
-
-        # 1. make the county/state column
-        sub_df = pd.DataFrame(sorted(set(df[cur_scale])), columns=[cur_scale])
-
-        # 2. append the selected years' data to the smaller dataframe
+        s, e = min(period), max(period)
         hhi_col = f'HHI_{self.hhi_base}'
-        cols = ['case_cnt', 'sale_amt', hhi_col]
-        year_data = {start_year: 0, end_year: 0}
-        for y in year_data.keys():
-            year_data[y] = df.loc[df['year'] == y, cols].reset_index(drop=True)
+        if 'FIPS' in filename:
+            cur_scale = 'counties'
+            cur_scale_col = 'FIPS'
+        else:
+            cur_scale = 'states'
+            cur_scale_col = 'STUSPS'
 
-        # 3. clean the data: by case count & if there are any empty value.
+        # if the file exist then read it, otherwise run the code below
+        file_for_plot = self.__out_path + f'for_scatter_{s}_{e}.csv'
+        if os.path.exists(file_for_plot):
+            # If the file exists, read it
+            sub_df = pd.read_csv(file_for_plot)
+            print("File found. Data loaded from file.")
+        else:
+            df = pd.read_csv(self.__out_path+filename)
+            
+            # 1. make the county/state column
+            sub_df = pd.DataFrame(sorted(set(df[cur_scale_col])), columns=[cur_scale_col])
 
-        # 4. calculate the average price for start and end year & the chg%
+            # 2. do the avg price calculation, and append the year data to the sub_df
+            cols = [cur_scale_col, 'case_cnt', 'sale_amt']
+            for y in period:
+                tmp = df.loc[df['year'] == y, cols].reset_index(drop=True)
+                tmp['avg_price'] = tmp['sale_amt'] / tmp['case_cnt']
+                new_colname = [f"{c}_{y}" for c in tmp.columns if c != cur_scale_col]
+                tmp.columns = [cur_scale_col] + new_colname
+                sub_df = pd.merge(sub_df, tmp, on=cur_scale_col, how='left')
 
-        print(sub_df)
+            # 3. make the HHI for the designated period 
+            #    (if takes too long, the deed_prep step can output a csv and read it when future call)
+            period_hhi = self.deed_prep(
+                is_yearly=False, gen_data=False, period=period, scale=cur_scale
+            )
+            cur_thresh = self.threshold
+            period_hhi = period_hhi.loc[period_hhi['case_cnt'] >= cur_thresh, [cur_scale_col, hhi_col]]
+            sub_df = pd.merge(sub_df, period_hhi, on=cur_scale_col, how='left')
 
-        # 4. plot the percetage change with HHI as the scatter plot, 
+            # 4. clean the data: by case count & if there are any empty value.
+            sub_df = sub_df.dropna().reset_index(drop=True)
+
+            # 5. calculate the price_chg%
+            sub_df['price_chg'] = (sub_df[f'avg_price_{e}'] / sub_df[f'avg_price_{s}']) - 1
+
+            # And generate the file for future use
+            sub_df.to_csv(file_for_plot, index=False)
+        
+        fo_remark = ""
+        if filter_outlier:
+            fo_remark = '_fo'
+            # Remove outliers (using the interquartile range, IQR, method)
+            Q1 = sub_df['price_chg'].quantile(0.25)
+            Q3 = sub_df['price_chg'].quantile(0.75)
+            IQR = Q3 - Q1
+            lower_bound = Q1 - 1.5 * IQR
+            upper_bound = Q3 + 1.5 * IQR
+            # Filter out the outliers
+            sub_df = sub_df[(sub_df['price_chg'] >= lower_bound) & (sub_df['price_chg'] <= upper_bound)]
+
+        # 6. plot the percetage change with HHI as the scatter plot, 
         #    can consider add legend
+        plt.figure(figsize=(self.sizex, self.sizey))
+        plt.scatter(sub_df[hhi_col], sub_df['price_chg'], color='blue', edgecolor='k', alpha=0.5)
+
+        # Adding labels and title
+        plt.xlabel('HHI')
+        plt.ylabel('Price Change (%)')
+        plt.title('Scatter Plot of HHI vs. Price Change')
+        plt.grid(True)
+
+        if save_fig:
+            plt.savefig(f"{self.__out_path}{cur_scale}_scatter_{s}_{e}{fo_remark}.svg", format="svg")
+        else:
+            plt.show()
 
 
         return
@@ -557,14 +635,14 @@ def main():
     #     a.deed_plot_heat_map(file, save_fig=True, hhi_base='sale_amt', scale=s)
 
     # 2. draw time series of states from 1987
-    # file = 'yearly_agg_result_STATEFP.csv'
+    file = 'yearly_agg_result_STATEFP.csv'
     # a.deed_plot_time_series(file, hhi_base='sale_amt', save_fig=True)
 
     # 3. scatter plot of HHI (x-axis) and price change (y-axis)
     # change rate from 2006 to 2012 and 2012 to 2020
     file = "yearly_agg_result_FIPS.csv"
-    a.deep_plot_scatter(start_year=2006, end_year=2012, filename=file)
-    # a.deep_plot_scatter(start_year=2012, end_year=2020, filename=file)
+    a.deep_plot_scatter(period=[2006, 2012], filename=file, save_fig=True, filter_outlier=True)
+    a.deep_plot_scatter(period=[2012, 2016], filename=file, save_fig=True, filter_outlier=True)
 
 
     # ===============
