@@ -190,6 +190,11 @@ class Analysis():
             print(states[['NAME', 'STATEFP', 'STUSPS']])
 
         # check_abbreviation()
+        def check_other_data():
+            ddf = dd.read_csv('D:/User_Data/Downloads/Nat2015us/test.txt', header=None)
+
+            print(ddf[0].dtype)
+
         return
     
     def deed_prep(self, is_yearly=True, gen_data=False, period=[], scale=""):
@@ -714,7 +719,7 @@ def main():
 
     # 4. make the panel data (make yearly data to include price change)
     file = "yearly_agg_result_FIPS.csv"
-    a.make_hhi_panel(file, gen_data=True)
+    # a.make_hhi_panel(file, gen_data=True)
 
     # ===============
     #  Wild Thoughts

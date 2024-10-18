@@ -4,3 +4,9 @@ Originally, we thought there are several states with just a few observations,
 but after searching for those abbreviations, I believe they are typos. Thus,
 during deed_prep, instead of using SITUS_STATE (abbrev), I now use the first two 
 digits of FIPS (the states' fips) to group the data.
+
+
+# works to do
+1. matching the companies in deed and compustats
+2. joining corelogic deed and tax data
+3. when stacking deed, need to also keep the second hand transactions
