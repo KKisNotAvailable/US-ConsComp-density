@@ -189,11 +189,34 @@ class Analysis():
 
             print(states[['NAME', 'STATEFP', 'STUSPS']])
 
-        # check_abbreviation()
         def check_other_data():
-            ddf = dd.read_csv('D:/User_Data/Downloads/Nat2015us/test.txt', header=None)
+            '''
+            'CLIP', 'DEED_ID', 'AS_ASSESSED_YEAR', 'SALE_DATE', 'SALE_YEAR',
+            'SALE_MONTH', 'SALE_AMOUNT', 'SELLER_NAME', 'BUYER_NAME', 'NEW_HOME',    
+            'YEAR_BUILT', 'EFFECTIVE_YEAR_BUILT', 'AS_EFFECTIVE_YEAR_BUILT',
+            'VACANT_FLAG', 'SFH_IND', 'TOWNHOME_IND', 'CONDO_IND', 'PLEX_IND',       
+            'APARTMENT_IND', 'AS_LAND_SQUARE_FOOTAGE', 'AS_ACRES',
+            'AS_BEDROOMS_-_ALL_BUILDINGS', 'AS_TOTAL_ROOMS_-_ALL_BUILDINGS',
+            'AS_TOTAL_BATHROOMS_-_ALL_BUILDINGS', 'AS_NUMBER_OF_BATHROOMS',
+            'AS_FULL_BATHS_-_ALL_BUILDINGS', 'AS_NUMBER_OF_PARKING_SPACES',
+            'AS_STORIES_NUMBER', 'AS_NUMBER_OF_UNITS',
+            'AS_UNIVERSAL_BUILDING_SQUARE_FEET', 'LAND_USE_CODE',
+            'PROPERTY_IND_CODE', 'AS_LAND_USE_CODE', 'AS_PROPERTY_IND_CODE',
+            'AS_BUILDING_STYLE_CODE', 'ADDRESS_MAIN', 'ADDRESS', 'CITY', 'STATE',    
+            'ZIP_CODE', 'AS_CENSUS_ID', 'AS_SUBDIVISION_NAME',
+            'AS_SUBDIVISION_TRACT_NUMBER', 'AS_PARCEL_LEVEL_LAT',
+            'AS_PARCEL_LEVEL_LON', 'MORTGAGE_PURCHASE_IND', 'CASH_PURCHASE_IND',     
+            'NOT_SFH', 'FIPS_CODE', 'TEMP_ID'
+            '''
+            ddf = dd.read_csv(
+                '../from_dropbox/NewCoreLogic_Codes/Data/CoreLogic_Full_Post2000Sales.csv',
+                dtype={'AS_SUBDIVISION_TRACT_NUMBER': 'object'}
+            )
 
-            print(ddf[0].dtype)
+            out_peep = ddf.head(10)
+            out_peep.to_csv(f'{self.__out_path}check_newCL.csv', index=False)
+
+        check_other_data()
 
         return
     

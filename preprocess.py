@@ -13,6 +13,10 @@ Frist extract columns and stack all the data from the same path
 into one large csv. Then we use dask to do operations on these 
 large data.
 '''
+
+# NOTE:
+# 1. APN (Assessor's Parcel Number) refers to specific parcel of "land", not houses
+
 # TODO: merge the code for operations on TAX and DEED.
 
 PROPERTY_INDICATOR = {
@@ -103,9 +107,9 @@ class Preprocess():
 
         return out_df
     
-    def tax_files(
+    def stack_files(
             self, files = None, 
-            filepath: str = "../Corelogic/bulk_tax_fips_split/"
+            deed_or_tax: str = ""
         ) -> pd.DataFrame:
         '''
         The actions done here will be based on the data type of "files"
@@ -113,28 +117,49 @@ class Preprocess():
         list: on the list of files
         None: all of the files in the directory
         '''
-        self._filepath = filepath
-        self.write_log("Processed Tax files:")
-        cols_to_keep = [
-            "FIPS_CODE",
-            "PCL_ID_IRIS_FORMATTED", # unique key
-            "BLOCK LEVEL LATITUDE", # just to make sure
-            "BLOCK LEVEL LONGITUDE", # just to make sure
+        self._filepath = f"../Corelogic/bulk_{deed_or_tax.lower()}_fips_split/"
+        
+        cols_tax = [
+            "FIPS_CODE", # county
+            "PCL_ID_IRIS_FORMATTED", # unique key = APN
+            "PROPERTY_INDICATOR_CODE", # 10-19: residential, ..., 80-89: vacant
             "ASSESSED_TOTAL_VALUE",
-            "ASSESSED_LAND_VALUE",
-            "ASSESSED_IMPROVEMENT_VALUE",
             "MARKET_TOTAL_VALUE",
-            "MARKET_LAND_VALUE",
-            "MARKET_IMPROVEMENT_VALUE",
             "APPRAISED_TOTAL_VALUE",
-            "APPRAISED_LAND_VALUE",
-            "APPRAISED_IMPROVEMENT_VALUE",
             "TAX_AMOUNT",
             "TAX_YEAR",
             "SELLER_NAME", # just to make sure
             "SALE_AMOUNT", # just to make sure
-            "SALE_DATE" # just to make sure
+            "SALE_DATE", # just to make sure
+            "LAND_SQUARE_FOOTAGE",
+            "UNIVERSAL_BUILDING_SQUARE_FEET",
+            "BUILDING_SQUARE_FEET_INDICATOR_CODE", # A: adjusted; B: building; G: gross; H: heated; L: living; M: main; R: ground floor
+            "BUILDING_SQUARE_FEET", # doesn't differentiate living and non-living (if lack indicator code)
+            "LIVING_SQUARE_FEET"
         ]
+        cols_deed = [
+            "FIPS", # county
+            "PCL_ID_IRIS_FRMTD", # unique key
+            "SITUS_CITY",
+            "SITUS_STATE",
+            "SITUS_ZIP_CODE",
+            "SELLER NAME1", # name of the first seller
+            "SELLER NAME2",
+            "SALE AMOUNT",
+            "MORTGAGE_AMOUNT",
+            "MORTGAGE_INTEREST_RATE",
+            "MORTGAGE_ASSUMPTION_AMOUNT", # assumption amount of existing mortgage
+            "CASH/MORTGAGE_PURCHASE", # C,Q = cash; M,R = mortgage
+            "SALE DATE",
+            "RECORDING DATE",
+            "LAND_USE", # plz refer to codebook, there are 263 different
+            "SELLER_CARRY_BACK", # A,Y = Yes
+            "CONSTRUCTION_LOAN",
+            "PROPERTY_INDICATOR", # residential, commercial, refer to top of this code file
+            "RESALE/NEW_CONSTRUCTION" # M: re-sale, N: new construction
+        ]
+
+        cols_to_keep = cols_tax if deed_or_tax.lower() == 'tax' else cols_deed
 
         txt_extention = ".txt"
         
@@ -147,21 +172,23 @@ class Preprocess():
                 cols_to_keep=cols_to_keep
             )
 
+            # can specify condition here, but notice column names of tax and deed are different
+
             return tmp_df
         
-        fs = [] # get all the file names
-        if not files:
-            for f in os.listdir(self._filepath):
-                if f.endswith(txt_extention):
-                    fs.append(f)
-        elif isinstance(files, list):
-            fs = files
-        else:
-            fs.append(files)
+        dataframes = []
 
-        dataframes = [] # get data from the files
-        for f in tqdm(fs, desc="Tax files"):
-            dataframes.append(get_data(f))
+        if not files:
+            for f in tqdm(os.listdir(self._filepath), desc=f"{deed_or_tax} files"):
+                if f.endswith(txt_extention):
+                    dataframes.append(get_data(f))
+        elif isinstance(files, list):
+            for f in files:
+                dataframes.append(get_data(f))
+        else:
+            dataframes.append(get_data(files))
+
+        self.write_log(f"Processed {deed_or_tax} files:")
 
         return pd.concat(dataframes, ignore_index=True)
 
@@ -178,17 +205,23 @@ class Preprocess():
         self._filepath = filepath
         self.write_log("Processed Deed files:")
         cols_to_keep = [
-            "FIPS",
+            "FIPS", # county
             "PCL_ID_IRIS_FRMTD", # unique key
-            "BLOCK LEVEL LATITUDE",
-            "BLOCK LEVEL LONGITUDE",
             "SITUS_CITY",
             "SITUS_STATE",
             "SITUS_ZIP_CODE",
-            "SELLER NAME1",
+            "SELLER NAME1", # name of the first seller
+            "SELLER NAME2",
             "SALE AMOUNT",
+            "MORTGAGE_AMOUNT",
+            "MORTGAGE_INTEREST_RATE",
+            "MORTGAGE_ASSUMPTION_AMOUNT", # assumption amount of existing mortgage
+            "CASH/MORTGAGE_PURCHASE", # C,Q = cash; M,R = mortgage
             "SALE DATE",
             "RECORDING DATE",
+            "LAND_USE", # plz refer to codebook, there are 263 different
+            "SELLER_CARRY_BACK", # A,Y = Yes
+            "CONSTRUCTION_LOAN",
             "PROPERTY_INDICATOR", # residential, commercial, ...
             "RESALE/NEW_CONSTRUCTION" # M: re-sale, N: new construction
         ]
@@ -204,7 +237,7 @@ class Preprocess():
                 cols_to_keep=cols_to_keep
             )
 
-            tmp_df = tmp_df[tmp_df['RESALE/NEW_CONSTRUCTION'] == "N"].reset_index(drop=True)
+            # tmp_df = tmp_df[tmp_df['RESALE/NEW_CONSTRUCTION'] == "N"].reset_index(drop=True)
 
             return tmp_df
         
@@ -319,6 +352,20 @@ class Preprocess():
 
         # print(comp_list.columns)
 
+    def check_apn_match(self):
+        dfs = {}
+        for s in ['Deed', 'Tax']:
+            print(f">>> {s}:")
+            path = f"../Corelogic/bulk_{s.lower()}_fips_split/"
+            tmp = pd.read_csv(f'{path}fips-01011-UniversityofPA_Bulk_{s}.txt', delimiter="|")
+            
+            print(tmp.shape)
+            target_col = 'APN_NUMBER_FORMATTED' if s == 'Tax' else 'PCL_ID_IRIS_FRMTD'
+            dfs[s] = tmp[target_col]
+
+        intersection_cnts = dfs['Tax'].isin(dfs['Deed']).sum()
+        print(intersection_cnts)
+
 
 def deed_workflow(p: Preprocess):
     file_list = [
@@ -352,6 +399,8 @@ def main():
     log = f'deed_{current_date}.log'
 
     p = Preprocess(log_name=log)
+
+    # p.check_apn_match()
 
     # ===========================
     # Generate Stacked Deed Files

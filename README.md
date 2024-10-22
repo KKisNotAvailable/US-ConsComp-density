@@ -16,18 +16,46 @@ The original data has ??? rows, in the period of 20xx ~ 2016. The filtered data 
 2. scatter plot of price change and ENI
 3. time series of house price of new constructions, along with the mean price of all real estate transactions.
 
+https://www.zillow.com/research/data/
+這個有Metro的sale count, sale amount (2008-), days on market (2018-)
+sale cnt, amt 也有for new construction的 (2018-)
+
+https://data.census.gov/table
+可以去這裡挖個寶, 但目前看起來只有存近10年, archive不知道在哪
+
+https://www.census.gov/topics/housing.html
+稍微看了看沒有目前缺的資料
+
 ### Regression Analysis
 #### need more data
 > county-level info
-  1. yearly population
-  2. number / dollar amount of properties sold (both first and second hand)
-  3. housing stock
-  4. vacancy rate
-  5. median number of days property listings spend on the market (類似周轉率)
-  6. median household income (to measure affordability)
-  7. employment rate
-  8. 一些供給面的 (eg. construction cost, Wharton Residential Land Use Regulation Index, and land availability index?)
-  9. weather condition (有無自然災害影響 => should be some yearly binary code per county?)
+  1. [done] yearly population
+     https://www.census.gov/data/tables/time-series/demo/popest/2020s-counties-total.html 下面的archive: Dataset
+     >> 2000-2009: 2000-2009/counties/totals/co-est2009-alldata.csv
+     >> 2010-2019: 2010-2019/counties/totals/co-est2019-alldata.csv
+     >> 2020-2023: 2020-2023/counties/totals/co-est2023-alldata.csv
+  2. [???] number / dollar amount of properties sold (both first and second hand)
+     not down to even state level: https://www.census.gov/construction/nrs/data/series.html
+  3. [done] housing stock
+     https://www.census.gov/data/tables/time-series/demo/popest/2020s-total-housing-units.html 下面的archive: Dataset (會進到跟上面population一樣的地方)
+     >> 2000-2009: 2000-2009/housing/totals/hu-est2009-us.csv
+     >> 2010-2020: 2010-2020/housing/HU-EST2020_ALL.csv
+     >> 2020-2023: 中間一堆state的地方按第一個 United States: CO-EST2023-HU.xlsx
+  4. [done] vacancy rate
+     https://www.census.gov/housing/hvs/data/prevann.html
+     裡面有homeowner vac, gross vac, year-round vac (4~5a), def見第一PDF
+  5. [half_done] median number of days property listings spend on the market (類似周轉率)
+     https://www.realtor.com/research/data/ => monthly inventory => county, historical data (2016.07-)
+  6. [need_scrap] median household income (to measure affordability)
+     https://fred.stlouisfed.org/searchresults?st=county+level+median+household+income
+     >> county (06037): https://fred.stlouisfed.org/series/MHICA06037A052NCEN
+  7. [need_scrap] employment rate
+     https://www.bls.gov/lau/data.htm
+     >> county (48039): https://data.bls.gov/dataViewer/view/timeseries/LAUCN480390000000004
+     >> state (06): https://data.bls.gov/dataViewer/view/timeseries/LASST060000000000003
+  8. [???] 一些供給面的 (eg. construction cost, Wharton Residential Land Use Regulation Index, and land availability index?)
+  9. [???] weather condition (有無自然災害影響 => should be some yearly binary code per county?)
+     https://www.ngdc.noaa.gov/hazard/
 > construction company characteristics (from compustat)
 
 ### [Plot] Company-specific responses through house price cycles
