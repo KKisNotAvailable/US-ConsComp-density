@@ -58,6 +58,9 @@ https://www.census.gov/topics/housing.html
      https://www.ngdc.noaa.gov/hazard/
 > construction company characteristics (from compustat)
 
+#### Filter conditions of CoreLogic
+1. 
+
 ### [Plot] Company-specific responses through house price cycles
 (幾乎都是好壞時期的比較)
 1. properties sold during good/bad time for small and large companies
