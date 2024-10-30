@@ -91,6 +91,7 @@ class Preprocess():
             '115', '116', '117', '118', '131', '132', '133', '134', '148', 
             '151', '163', '165', '245', '248', '281', '460', '465'
         ]
+        data = data[data['LAND_USE_CODE'].isin(keep_list)]
 
         # Remove Deed Duplicate Data (same date, same seller, same buyer, same parcel, same price)
         dup_list = ['CLIP','SALE_DATE','SELLER_1_FULL_NAME','BUYER_1_FULL_NAME','SALE_AMOUNT']
@@ -118,7 +119,7 @@ class Preprocess():
             for s in old_col
         ]
         new_col = ['_'.join(s.split()) for s in new_col]
-        ddf.rename(columns=dict(zip(old_col, new_col)), inplace=True)
+        ddf = ddf.rename(columns=dict(zip(old_col, new_col)))
 
         # In this version, CLIP can identify unique property
         # I saw some of the buyer 1 full name includes name of buyer 1 and 2
@@ -132,7 +133,7 @@ class Preprocess():
 
         ddf = ddf[keep_cols]
 
-        ddf = self.deed_filter(ddf)
+        # ddf = self.deed_filter(ddf)
 
         # the following columns need to be checked for dist. after filtering
         to_check = [
@@ -195,7 +196,7 @@ def main():
 
     p = Preprocess()
 
-    p.just_checking()
+    p.deed_clean()
     
     # ===========================
     # Generate Stacked Deed Files
