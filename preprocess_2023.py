@@ -1,27 +1,48 @@
 import dask.dataframe as dd
+import dask
+from dask.distributed import Client
 import numpy as np
 import os
 from tqdm import tqdm
 import re
 from datetime import datetime
+import platform
+import time
+import csv
 import warnings
 warnings.filterwarnings("ignore")
 
-BULK_PATH = "F:/CoreLogic/"
+# FOR MAC
+# virtual env: source env/bin/activate
+# if no pip: curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py
+#      then: python3 get-pip.py
+
+CUR_SYS  = platform.system()
+
+BULK_PATH = "F:/" if CUR_SYS == 'Windows' else '/Volumes/KINGSTON/'
+BULK_PATH += "CoreLogic/"
+BLOCKSIZE = "100MB"
+
 
 # NOTE:
 #   The old deed code book still got useful info, such as the land use code
 
 class Preprocess():
     def __init__(
-            self, log_name: str = "", log_path: str = "./log/",
-            bulkfile: str = "duke_university_ownertransfer_v3_dpc_01465911_20230803_072211_data.txt"
+            self, log_name: str = "", log_path: str = "./log/", out_path: str = './output/',
+            bulk_deed: str = "duke_university_ownertransfer_v3_dpc_01465911_20230803_072211_data.txt",
+            bulk_tax: str = "duke_university_property_basic2_dpc_01465909_20230803_072103_data.txt"
         ) -> None:
-        self.bulkfile = f"{BULK_PATH}{bulkfile}"
+        self.bulk_deed = f"{BULK_PATH}{bulk_deed}"
+        self.bulk_tax = f"{BULK_PATH}{bulk_tax}"
         self.__log_file = log_path + log_name
+        self.__out_path = out_path
 
         if not os.path.exists(log_path):
             os.makedirs(log_path)
+
+        if not os.path.exists(out_path):
+            os.makedirs(out_path)
 
         if log_name:
             if not os.path.exists(self.__log_file):
@@ -29,7 +50,7 @@ class Preprocess():
                     pass  # Just create an empty file
 
     def write_log(self, message):
-        """Writes a log message with a timestamp to the log file."""
+        """Writes message to the log file."""
         with open(self.__log_file, 'a') as f:
             f.write(f"{message}\n")
 
@@ -71,31 +92,32 @@ class Preprocess():
         data = data[data['SHORT_SALE_IND'] == '0']
 
         # Remove if neither resale or new construction
-        data = data[~((data['NEW_CONSTRUCTION_IND'] == 0) & (data['RESALE_IND'] == 0))]
+        data = data[~((data['NEW_CONSTRUCTION_IND'] == '0') & (data['RESALE_IND'] == '0'))]
         # Column for resale and new construction
-        data['NEW_HOME_ORIG'] = np.where((data['NEW_CONSTRUCTION_IND'] == '1') & (data['RESALE_IND'] == '0'), True, False)
+        data = data.assign(NEW_HOME_ORIG=(data['NEW_CONSTRUCTION_IND'] == '1') & (data['RESALE_IND'] == '0'))
 
         # Remove if sale price is less than 1,000 to avoid nominal transactions
-        data = data[(data['SALE_AMOUNT'].astype('float') >= 1000) | (data['SALE_AMOUNT'].isna())]
+        data = data[(data['SALE_AMOUNT'] >= 1000) | (data['SALE_AMOUNT'].isna())]
 
         # Remove mobile and manufactured homes
-        data = data[data['MOBILE_HOME_IND'] != 'Y']   
+        data = data[data['MOBILE_HOME_IND'] != 'Y']
         data = data[~data['SELLER_1_FULL_NAME'].str.contains('MOBILE HOME|MANUFACTURED HOME|CONDOMINIUM|CONDO|APARTMENT', na=False)]
         data = data[~data['LAND_USE_CODE'].isin(['135','137','138','454','775'])]
 
         # Here we include all the reasonable LAND_USE_CODE that could
         # be available on the residential housing market. (plz refer to the old deed codebook)
         # (different with Jaimie because of different research target)
+        # NOTE: but we might need to exclude the multi-family ones later...
         keep_list = [
-            '100', '102', '103', '106', '109', '111', '112', '113', '114', 
-            '115', '116', '117', '118', '131', '132', '133', '134', '148', 
+            '100', '102', '103', '106', '109', '111', '112', '113', '114',
+            '115', '116', '117', '118', '131', '132', '133', '134', '148',
             '151', '163', '165', '245', '248', '281', '460', '465'
         ]
         data = data[data['LAND_USE_CODE'].isin(keep_list)]
 
         # Remove Deed Duplicate Data (same date, same seller, same buyer, same parcel, same price)
         dup_list = ['CLIP','SALE_DATE','SELLER_1_FULL_NAME','BUYER_1_FULL_NAME','SALE_AMOUNT']
-        data.drop_duplicates(subset=dup_list, inplace=True)
+        data = data.drop_duplicates(subset=dup_list)
 
         # Drop columns who had done their responsibility
         to_drop = [
@@ -105,9 +127,33 @@ class Preprocess():
         data = data.drop(columns=to_drop)
 
         return data
-    
-    def deed_clean(self):
-        ddf = dd.read_csv(self.bulkfile, delimiter="|", dtype='str')
+
+    def deed_clean(self, save_file: bool = False):
+        data_type_spec = {
+            'CLIP': 'str', # 1006407533
+            'LAND USE CODE - STATIC': 'category',
+            'MOBILE HOME INDICATOR': 'category',
+            'TRANSACTION FIPS CODE': 'category',
+            'SALE AMOUNT': 'float64',
+            'SALE DERIVED DATE': 'str', # 20210908
+            'SALE DERIVED RECORDING DATE': 'str',
+            'PRIMARY CATEGORY CODE': 'category',
+            'DEED CATEGORY TYPE CODE': 'category',
+            'INTERFAMILY RELATED INDICATOR': 'category',
+            'RESALE INDICATOR': 'category',
+            'NEW CONSTRUCTION INDICATOR': 'category',
+            'SHORT SALE INDICATOR': 'category',
+            'FORECLOSURE REO INDICATOR': 'category',
+            'FORECLOSURE REO SALE INDICATOR': 'category',
+            'BUYER 1 FULL NAME': 'str',
+            'SELLER 1 FULL NAME': 'str'
+        }
+
+        ddf = dd.read_csv(
+            self.bulk_deed, delimiter="|", blocksize=BLOCKSIZE,
+            usecols=data_type_spec.keys(), dtype=data_type_spec,
+            on_bad_lines='skip', quoting=csv.QUOTE_NONE
+        )
 
         old_col = ddf.columns
         new_col = [
@@ -115,7 +161,7 @@ class Preprocess():
                 .replace(r' - STATIC','')\
                 .replace('DEED SITUS ','')\
                 .replace('INDICATOR','IND')\
-                .replace('CORPORATE','CORP') 
+                .replace('CORPORATE','CORP')
             for s in old_col
         ]
         new_col = ['_'.join(s.split()) for s in new_col]
@@ -126,14 +172,47 @@ class Preprocess():
         keep_cols = [
             'CLIP', 'LAND_USE_CODE', 'TRANSACTION_FIPS_CODE', 'SALE_AMOUNT',
             'SALE_DERIVED_DATE', 'SALE_DERIVED_RECORDING_DATE',
+            'PRIMARY_CATEGORY_CODE', 'DEED_CATEGORY_TYPE_CODE',
             'INTERFAMILY_RELATED_IND', 'RESALE_IND', 'NEW_CONSTRUCTION_IND',
             'SHORT_SALE_IND', 'FORECLOSURE_REO_IND', 'FORECLOSURE_REO_SALE_IND',
+            'MOBILE_HOME_IND',
             'BUYER_1_FULL_NAME', 'SELLER_1_FULL_NAME'
         ]
 
-        ddf = ddf[keep_cols]
+        # ddf = ddf[keep_cols] # might not need this, since we already does this when reading csv
 
-        # ddf = self.deed_filter(ddf)
+        # ========================
+        #  Make SALE_DATE & Clean
+        # ========================
+        # Date: SALE_DERIVED_DATE, if '0' then SALE_DERIVED_RECORDING_DATE
+        ddf['SALE_DATE'] = ddf['SALE_DERIVED_DATE']\
+            .where(ddf['SALE_DERIVED_DATE'] != '0', ddf['SALE_DERIVED_RECORDING_DATE'])
+        # drop NA and '0' in the end
+        ddf = ddf.dropna(subset=['SALE_DATE'])
+        ddf = ddf[ddf['SALE_DATE'] != '0']
+
+        ddf = ddf.drop(columns=['SALE_DERIVED_DATE', 'SALE_DERIVED_RECORDING_DATE'])
+
+        # ==================
+        #  Do the filtering
+        # ==================
+        # Convert columns to numeric types, coercing errors to NaN
+        # ddf['SALE_AMOUNT'] = dd.to_numeric(ddf['SALE_AMOUNT'], errors='coerce')
+
+        ddf = self.deed_filter(ddf)
+
+        # only 'CLIP', 'LAND_USE_CODE', 'TRANSACTION_FIPS_CODE', 'SALE_AMOUNT', 'DATE',
+        # 'BUYER_1_FULL_NAME', 'SELLER_1_FULL_NAME' left
+
+        if save_file:
+            ddf.to_csv(self.__out_path+'deed_cleaned_*.csv', single_file=True)
+        return
+
+    def _deed_check(self, cleaned_deed):
+        '''
+        This function is to do some simple analysis on the cleaned deed file.
+        '''
+        ddf = dd.read_csv("")
 
         # the following columns need to be checked for dist. after filtering
         to_check = [
@@ -153,58 +232,77 @@ class Preprocess():
                 print(f'Now checking {c}')
                 print(ddf[c].value_counts()) # exclude NA automatically
 
-        # ==============
-        #  Make columns
-        # ==============
-        # Date: SALE_DERIVED_DATE, if '0' then SALE_DERIVED_RECORDING_DATE
-        # drop NA and '0' in the end
+    def just_checking(self, file_type: str):
+        '''
 
-
-        return
-
-    def just_checking(self):
-        ddf = dd.read_csv(self.bulkfile, delimiter="|", dtype='str')
+        Parameters
+        ----------
+        file_type: str
+            can only be "deed" or "tax"
+        '''
+        cur_file = self.bulk_deed if file_type.lower() == 'deed' else self.bulk_tax
+        ddf = dd.read_csv(cur_file, delimiter="|", dtype='str', on_bad_lines='skip')
 
         # =======================================
         #  Save a small dataset for clearer view
         # =======================================
-        # tmp = ddf.head(30)
-        # tmp.to_csv("./log/deed_2023_first30.txt", index=False)
+        # top_n = 100
+        # tmp = ddf.head(top_n)
+        # tmp.to_csv(f"./log/{cur_file}_2023_first{top_n}.txt", index=False)
 
-        # ================
-        #  Basic checking
-        # ================
-        cols_to_check = [
-            'PROPERTY INDICATOR CODE - STATIC',
-            'MULTI OR SPLIT PARCEL CODE',
-            'PRIMARY CATEGORY CODE',
-            'DEED CATEGORY TYPE CODE',
-            'RECORD ACTION INDICATOR'
-        ]
-        for c in cols_to_check:
-            print(f"==> Current col: {c}")
-            print(ddf[c].value_counts(dropna=False)) # counting include NA
+        # =====================
+        #  Basic checking Deed
+        # =====================
+        # cols_to_check = [
+        #     'PROPERTY INDICATOR CODE - STATIC',
+        #     'MULTI OR SPLIT PARCEL CODE',
+        #     'PRIMARY CATEGORY CODE',
+        #     'DEED CATEGORY TYPE CODE',
+        #     'RECORD ACTION INDICATOR'
+        # ]
+        # for c in cols_to_check:
+        #     print(f"==> Current col: {c}")
+        #     print(ddf[c].value_counts(dropna=False)) # counting include NA
 
-        ttl_rows = ddf['FIPS'].shape[0].compute() # but why len(ddf['FIPS']) won't work?
-        print(ttl_rows)
+        # ttl_rows = ddf['FIPS'].shape[0].compute() # but why len(ddf['FIPS']) won't work?
+        # print(ttl_rows)
 
         return
 
 def main():
+    dask.config.set({'distributed.worker.memory.spill': True})
+
+    # to speed up the Dask computation
+    if CUR_SYS == 'Darwin':
+        # Configure client settings for local computation:
+        #    number of machines, core, half of memory
+        print("Now on Mac!")
+        client = Client(n_workers=1, threads_per_worker=8, memory_limit='10GB')
+    else:
+        client = Client(n_workers=1, threads_per_worker=2, memory_limit='4GB')
+
+
+    # print(client.dashboard_link)
+
     current_date = datetime.now().strftime("%m%d")
-    log = f'deed_{current_date}.log'
+    log = f'data_process.log'
 
     p = Preprocess()
 
-    p.deed_clean()
-    
-    # ===========================
-    # Generate Stacked Deed Files
-    # ===========================
-    # deed_workflow(p)
+    # p.just_checking()
+
+    # ===================
+    #  Filter Deed Files
+    # ===================
+    p.deed_clean(save_file=True)
+
+    client.close()
+
+    # Records
+    # died on 186265
 
     print("Done!!")
-    
+
 
 if __name__ == "__main__":
     main()
