@@ -1,5 +1,6 @@
 import dask.dataframe as dd
 import dask
+import dask.bag as db
 from dask.distributed import Client
 import numpy as np
 import os
@@ -54,6 +55,31 @@ class Preprocess():
         with open(self.__log_file, 'a') as f:
             f.write(f"{message}\n")
 
+
+    def split_file(self, which_file: str):
+        '''
+
+        '''
+        filename = self.bulk_deed if which_file.lower() == 'deed' else self.bulk_tax
+
+        # ddf = dd.read_csv(
+        #     filename, blocksize='1GB',
+        #     header=None, sep='\n', engine='python',
+        #     on_bad_lines='skip', quoting=csv.QUOTE_NONE
+        # )
+        # split to 1GB files and save. TODO: might also want this to be argument
+        dask_bag = db.read_text(
+            filename, blocksize='700MB', encoding='utf-8', errors='ignore'
+        )
+
+        # Save each partition to separate files
+        # TODO: should add an argument: dest
+        dask_bag.to_textfiles('/Volumes/KINGSTON/CoreLogic/deed_2023/deed_2023_part_*.txt')
+
+        # Split and save each partition to a new file
+        # for i, partition in enumerate(ddf.to_delayed()):
+        #     partition.compute().to_csv(f'/Volumes/KINGSTON/CoreLogic/deed_2023/deed_2023_{i+1:04d}.txt', index=False, header=False)
+
     def deed_filter(self, data):
         '''
         This largely follows Jaimie's (jaimie.choi@duke.edu) NewClean.py
@@ -67,7 +93,7 @@ class Preprocess():
 
         Return
         ------
-            filtered data.
+            filtered data, same data type as the input.
         '''
         # Remove Non-Arms Length Transactions
         data = data[data['INTERFAMILY_RELATED_IND'] == '0']
@@ -128,7 +154,14 @@ class Preprocess():
 
         return data
 
-    def deed_clean(self, save_file: bool = False):
+    def deed_clean(
+        self, filename: str,
+        save_file: bool = False,
+        outfile = 'deed_cleaned'
+    ):
+        '''
+        Assume in this function can handle all the column thing...
+        '''
         data_type_spec = {
             'CLIP': 'str', # 1006407533
             'LAND USE CODE - STATIC': 'category',
@@ -149,8 +182,18 @@ class Preprocess():
             'SELLER 1 FULL NAME': 'str'
         }
 
+        # TODO: read the file for setting header
+        # Check if the file has header, if not then get header file and
+        # attach to the first row
+        # OR I JUST MANUALLY DO THIS??
+        # ** might need to read file twice, first for checking if header exist
+        #    the second time do the real process thing.
+
+        # [AFTER SPLITTING] first need to check if each file could be opened.
+
+        # planned second open
         ddf = dd.read_csv(
-            self.bulk_deed, delimiter="|", blocksize=BLOCKSIZE,
+            filename, delimiter="|", blocksize=BLOCKSIZE,
             usecols=data_type_spec.keys(), dtype=data_type_spec,
             on_bad_lines='skip', quoting=csv.QUOTE_NONE
         )
@@ -205,8 +248,27 @@ class Preprocess():
         # 'BUYER_1_FULL_NAME', 'SELLER_1_FULL_NAME' left
 
         if save_file:
-            ddf.to_csv(self.__out_path+'deed_cleaned_*.csv', single_file=True)
-        return
+            ddf.to_csv(self.__out_path+f'{outfile}_*.csv', single_file=True)
+        else:
+            return ddf.compute()
+
+    def batch_process(self, inpath: str, outpath = ""):
+        '''
+
+        '''
+        save_file = True if outpath else False
+
+        to_cat = [] # only works if no outpath specified
+        # 1. for each file in the path, do deed_clean
+        for filename in os.listdir(path=inpath):
+            if filename.endswith('.txt'):
+                file_path = os.path.join(inpath, filename)
+
+                # 2. the out name should follow the input filename
+                #    plus, which path is it going to be saved to
+                outname = outpath + 'deed_cleaned'
+                to_cat.append(self.deed_clean(
+                    filename, save_file=save_file, outfile=outname))
 
     def _deed_check(self, cleaned_deed):
         '''
@@ -291,10 +353,22 @@ def main():
 
     # p.just_checking()
 
+    # ======================
+    #  Break the large file
+    # ======================
+    p.split_file(which_file='deed')
+
+    # ========================
+    #  Process splitted files
+    # ========================
+    # if outpath specified, the cleaned files would be saved to that dir
+    p.batch_process(BULK_PATH+'deed_2023', outpath='output/deed_2023_cleaned')
+
     # ===================
-    #  Filter Deed Files
+    #  Filter Bulk Files
     # ===================
-    p.deed_clean(save_file=True)
+    # [avoid run this unless your CPU is more than 8 cores and memory is larger than 64GB]
+    # p.deed_clean(filename=p.bulk_deed, save_file=True)
 
     client.close()
 
