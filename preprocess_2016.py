@@ -3,14 +3,20 @@ import numpy as np
 import os
 from tqdm import tqdm
 import re
+import platform
 from datetime import datetime
 import csv # for csv.QUOTE_NONE, which ignores ' when reading csv
 import warnings
 warnings.filterwarnings("ignore")
 
+CUR_SYS  = platform.system()
+
+BULK_PATH = "F:/" if CUR_SYS == 'Windows' else '/Volumes/KINGSTON/'
+BULK_PATH += "CoreLogic/2016_files/Corelogic/"
+
 '''HIGH LEVEL IDEA
 Frist extract columns and stack all the data from the same path
-into one large csv. Then we use dask to do operations on these 
+into one large csv. Then we use dask to do operations on these
 large data.
 '''
 
@@ -49,204 +55,196 @@ PROPERTY_INDICATOR = {
 CHUNK_SIZE = 1000000 # this for Deed files is about 400MB
 
 class Preprocess():
-    def __init__(self, log_name: str, log_path: str = "./log/") -> None:
-        self._filepath = ""
+    def __init__(self, log_name: str = "", log_path: str = "./log/") -> None:
+        self.__ref_filepath = f'{BULK_PATH}bulk_deed_fips_split/'
         self.__log_file = log_path + log_name
 
-        if not os.path.exists(log_path):
-            os.makedirs(log_path)
+        if log_name:
+            if not os.path.exists(log_path):
+                os.makedirs(log_path)
 
-        if not os.path.exists(self.__log_file):
-            with open(self.__log_file, 'w') as f:
-                pass  # Just create an empty file
+            if not os.path.exists(self.__log_file):
+                with open(self.__log_file, 'w') as f:
+                    pass  # Just create an empty file
 
     def write_log(self, message):
         """Writes a log message with a timestamp to the log file."""
         with open(self.__log_file, 'a') as f:
             f.write(f"{message}\n")
 
-    def _read_n_clean(self, filename: str = None, cols_to_keep: list = []) -> pd.DataFrame:
+    def _filter(self, data, deed_or_tax: str = ""):
         '''
-        Based on the filename and cols_to_keep provided, will return
-        the desired dataframe.
-        Notice that this method does not filter the data.
+        This largely follows the 2023 data filter
         '''
-        if not filename:
-            print("Please provide valid file.")
-            return
-        
-        match = re.search(r'\d+', filename)
-        serial_n = match.group()
-        
-        filename = self._filepath + filename
+        if deed_or_tax.lower() == 'deed':
+            data['BUYER_NAME_1'] = data['OWNER_1_LAST_NAME'] + " " + data['OWNER_1_FIRST_NAME&MI']
+
+            # keep the numeric and empty records
+            data = data[(data['SALE AMOUNT'].str.isnumeric()) | (data['SALE AMOUNT'] == "")]
+
+            # keep nonempty and valid sale date and then keep only after year 2000
+            data = data[data['SALE DATE'].str.isnumeric()]
+            data = data[data['SALE DATE'].str[:4].astype(int) > 2000]
+
+            # Remove Non-Arms Length Transactions
+            data = data[data['INTER_FAMILY'] != 'Y']
+            # A: 'Arms Length Transaction', B-C: 'Non Arms Length' (pri-cat-code in old codebook)
+            data = data[data['PRI-CAT-CODE'] == 'A']
+            # Remove if first 10 characters are identical for seller and buyer name
+            # what we want is seller != buyer, but not sure about OWNER RECORD
+            data = data[(data['SELLER NAME1'].str[0:10] != data['BUYER_NAME_1'].str[0:10])]
+
+            # Remove foreclosure and government-to-private party transactions (REO-nominal, REO Sale: Gov to private party)
+            data = data[~data['FORECLOSURE'].isin(['Y', 'P'])]
+            # Remove (foreclosure & in lieu of foreclosure deed) and (nominal deed)
+            data = data[~data['DOCUMENT TYPE'].isin(['U', 'DL', 'Z', '^'])]
+            # Remove if seller is related to Federal Homes Loan Mortgage (Fannie Mae) -- foreclosure homes --
+            data = data[~data['SELLER NAME1'].isin(['FEDERAL|FEDL'])]
+
+            # Remove empty rows in RESALE/NEW_CONSTRUCTION
+            data = data[data['RESALE/NEW_CONSTRUCTION'].isin(['M', 'N'])]
+
+            # Remove mobile and manufactured homes
+            data = data[~data['SELLER NAME1'].str.contains('MOBILE HOME|MANUFACTURED HOME', na=False)]
+            data = data[~data['LAND_USE'].isin(['135','137','138','454','775'])]
+
+            # Remove equity loan (增貸)
+            data = data[data['EQUITY_FLAG'] != 'Y']
+
+            # Remove Re-finance
+
+            # Here we include all the reasonable LAND_USE_CODE that could
+            # be available on the residential housing market. (plz refer to the deed codebook)
+            # NOTE: but we might need to exclude the multi-family ones later...
+            keep_list = [
+                '100', '102', '103', '106', '109', '111', '112', '113', '114',
+                '115', '116', '117', '118', '131', '132', '133', '134', '148',
+                '151', '163', '165', '245', '248', '281', '460', '465'
+            ]
+            data = data[data['LAND_USE'].isin(keep_list)]
+
+            # Remove Deed Duplicate Data
+            # rows with same first two values but different in third got different sale amount
+            dup_list = ['APN_UNFORMATTED', 'BATCH-ID', 'BATCH-SEQ']
+            data = data.drop_duplicates(subset=dup_list)
+
+            # Drop columns who had done their responsibility
+            to_drop = [
+                'OWNER_1_LAST_NAME', 'OWNER_1_FIRST_NAME&MI', 'INTER_FAMILY', "PRI-CAT-CODE",
+                'FORECLOSURE', 'DOCUMENT TYPE', 'EQUITY_FLAG'
+            ]
+            data = data.drop(columns=to_drop)
+
+        # No filter required for tax data, since we are left joining with deed later, and APN in tax file is unique
+
+        return data
+
+    def _read_n_clean(self, filename: str, deed_or_tax: str = "") -> pd.DataFrame:
+        '''
+
+        Parameters
+        ----------
+        filename: str.
+            Should be the full path to the file.
+
+        Return
+        ------
+            the cleaned dataframe.
+        '''
+        cols_tax = {
+            # "FIPS_CODE": 'category', # county
+            "APN_NUMBER_UNFORMATTED": 'str', # APN
+            # "PROPERTY_INDICATOR_CODE", # 10-19: residential, ..., 80-89: vacant
+            # "ASSESSED_TOTAL_VALUE",
+            # "MARKET_TOTAL_VALUE",
+            # "APPRAISED_TOTAL_VALUE",
+            # "TAX_AMOUNT",
+            "LAND_SQUARE_FOOTAGE": 'str',
+            "UNIVERSAL_BUILDING_SQUARE_FEET": 'str',
+            "BUILDING_SQUARE_FEET_INDICATOR_CODE": 'category', # A: adjusted; B: building; G: gross; H: heated; L: living; M: main; R: ground floor
+            "BUILDING_SQUARE_FEET": 'str', # doesn't differentiate living and non-living (if lack indicator code)
+            "LIVING_SQUARE_FEET": 'str'
+        }
+        cols_deed = {
+            "FIPS": 'category', # county
+            "APN_UNFORMATTED": 'str', # APN
+            "BATCH-ID": 'str', # actually in the form of yyyymmdd, not the same as sale date
+            "BATCH-SEQ": 'str',
+            "OWNER_1_LAST_NAME": 'str',
+            "OWNER_1_FIRST_NAME&MI": 'str',
+            "SELLER NAME1": 'str', # name of the first seller
+            "SALE AMOUNT": 'str',
+            "SALE DATE": 'str',
+            "LAND_USE": 'category', # plz refer to codebook, there are 263 different
+            "PROPERTY_INDICATOR": 'category', # residential, commercial, refer to top of this code file
+            "RESALE/NEW_CONSTRUCTION": 'category', # M: re-sale, N: new construction
+            "INTER_FAMILY": 'category',
+            "PRI-CAT-CODE": 'category',
+            "FORECLOSURE": 'category',
+            "DOCUMENT TYPE": 'category',
+            "EQUITY_FLAG": 'category'
+            # "REFI_FLAG": 'category' # all NaN
+        }
+
+        data_type_spec = cols_tax if deed_or_tax.lower() == 'tax' else cols_deed
 
         def handle_bad_line(bad_line):
-            to_log= f"File {serial_n} skipping line: {bad_line}"
+            # this filename is the full path
+            to_log= f"{filename} skipping line: {bad_line}"
             self.write_log(to_log)
             return None  # Returning None tells pandas to skip this line
 
         dfs = []
 
-        # 對於壞的row先忽略
         for chunk in pd.read_csv(
-            filename, delimiter="|", 
+            filename, delimiter="|",
             chunksize=CHUNK_SIZE, # can only work with engine = c or python
+            usecols=data_type_spec.keys(), dtype=data_type_spec,
             # on_bad_lines=handle_bad_line, # callable can only work with engine = python or pyarrow
             on_bad_lines='skip', # skip the bad rows for now, guess there won't be many (cannot check tho)
             engine='c',
             quoting=csv.QUOTE_NONE
         ):
-            if cols_to_keep:
-                chunk = chunk[cols_to_keep]
-            dfs.append(chunk)
+            dfs.append(self._filter(chunk, deed_or_tax=deed_or_tax))
 
         out_df = pd.concat(dfs, ignore_index=True)
 
-        to_log= f"File {serial_n} done."
-        self.write_log(to_log)
+        # align the unique key column
+        if 'APN_NUMBER_UNFORMATTED' in out_df.columns:
+            out_df.rename(columns={'APN_NUMBER_UNFORMATTED': 'APN_UNFORMATTED'}, inplace=True)
+
+        # replace spaces in column names with "_"
+        out_df.columns = out_df.columns.str.replace(' ', '_')
 
         return out_df
-    
-    def stack_files(
-            self, files = None, 
-            deed_or_tax: str = ""
-        ) -> pd.DataFrame:
+
+    def stack_files(self, files = None) -> pd.DataFrame:
         '''
         The actions done here will be based on the data type of "files"
         str: on single file
         list: on the list of files
         None: all of the files in the directory
         '''
-        self._filepath = f"../Corelogic/bulk_{deed_or_tax.lower()}_fips_split/"
-        
-        cols_tax = [
-            "FIPS_CODE", # county
-            "PCL_ID_IRIS_FORMATTED", # unique key = APN
-            "PROPERTY_INDICATOR_CODE", # 10-19: residential, ..., 80-89: vacant
-            "ASSESSED_TOTAL_VALUE",
-            "MARKET_TOTAL_VALUE",
-            "APPRAISED_TOTAL_VALUE",
-            "TAX_AMOUNT",
-            "TAX_YEAR",
-            "SELLER_NAME", # just to make sure
-            "SALE_AMOUNT", # just to make sure
-            "SALE_DATE", # just to make sure
-            "LAND_SQUARE_FOOTAGE",
-            "UNIVERSAL_BUILDING_SQUARE_FEET",
-            "BUILDING_SQUARE_FEET_INDICATOR_CODE", # A: adjusted; B: building; G: gross; H: heated; L: living; M: main; R: ground floor
-            "BUILDING_SQUARE_FEET", # doesn't differentiate living and non-living (if lack indicator code)
-            "LIVING_SQUARE_FEET"
-        ]
-        cols_deed = [
-            "FIPS", # county
-            "PCL_ID_IRIS_FRMTD", # unique key
-            "SITUS_CITY",
-            "SITUS_STATE",
-            "SITUS_ZIP_CODE",
-            "SELLER NAME1", # name of the first seller
-            "SELLER NAME2",
-            "SALE AMOUNT",
-            "MORTGAGE_AMOUNT",
-            "MORTGAGE_INTEREST_RATE",
-            "MORTGAGE_ASSUMPTION_AMOUNT", # assumption amount of existing mortgage
-            "CASH/MORTGAGE_PURCHASE", # C,Q = cash; M,R = mortgage
-            "SALE DATE",
-            "RECORDING DATE",
-            "LAND_USE", # plz refer to codebook, there are 263 different
-            "SELLER_CARRY_BACK", # A,Y = Yes
-            "CONSTRUCTION_LOAN",
-            "PROPERTY_INDICATOR", # residential, commercial, refer to top of this code file
-            "RESALE/NEW_CONSTRUCTION" # M: re-sale, N: new construction
-        ]
-
-        cols_to_keep = cols_tax if deed_or_tax.lower() == 'tax' else cols_deed
-
         txt_extention = ".txt"
-        
-        def get_data(f: str):
-            if not f.endswith(txt_extention):
-                f = f + txt_extention
-            
-            tmp_df = self._read_n_clean(
-                filename=f,
-                cols_to_keep=cols_to_keep
-            )
 
-            # can specify condition here, but notice column names of tax and deed are different
+        def get_data(fips: str):
+            cleaned_data = {}
+            for cur_type in ['deed', 'tax']:
+                cleaned_data[cur_type] = self._read_n_clean(
+                    filename=f'{BULK_PATH}bulk_{cur_type}_fips_split/fips-{fips}-UniversityofPA_Bulk_{cur_type.capitalize()}.txt',
+                    deed_or_tax=cur_type
+                )
+            return cleaned_data['deed'].merge(cleaned_data['tax'],
+                                              on='APN_UNFORMATTED', how='left')
 
-            return tmp_df
-        
         dataframes = []
 
         if not files:
-            for f in tqdm(os.listdir(self._filepath), desc=f"{deed_or_tax} files"):
+            # loop through one of the folder to get
+            for f in tqdm(os.listdir(self.__ref_filepath), desc=f"Merging files"):
                 if f.endswith(txt_extention):
-                    dataframes.append(get_data(f))
-        elif isinstance(files, list):
-            for f in files:
-                dataframes.append(get_data(f))
-        else:
-            dataframes.append(get_data(files))
-
-        self.write_log(f"Processed {deed_or_tax} files:")
-
-        return pd.concat(dataframes, ignore_index=True)
-
-    def deed_files(
-            self, files = None, 
-            filepath: str = "../Corelogic/bulk_deed_fips_split/"
-        ) -> pd.DataFrame:
-        '''
-        The actions done here will be based on the data type of "files"
-        str: on single file
-        list: on the list of files
-        None: all of the files in the directory
-        '''
-        self._filepath = filepath
-        self.write_log("Processed Deed files:")
-        cols_to_keep = [
-            "FIPS", # county
-            "PCL_ID_IRIS_FRMTD", # unique key
-            "SITUS_CITY",
-            "SITUS_STATE",
-            "SITUS_ZIP_CODE",
-            "SELLER NAME1", # name of the first seller
-            "SELLER NAME2",
-            "SALE AMOUNT",
-            "MORTGAGE_AMOUNT",
-            "MORTGAGE_INTEREST_RATE",
-            "MORTGAGE_ASSUMPTION_AMOUNT", # assumption amount of existing mortgage
-            "CASH/MORTGAGE_PURCHASE", # C,Q = cash; M,R = mortgage
-            "SALE DATE",
-            "RECORDING DATE",
-            "LAND_USE", # plz refer to codebook, there are 263 different
-            "SELLER_CARRY_BACK", # A,Y = Yes
-            "CONSTRUCTION_LOAN",
-            "PROPERTY_INDICATOR", # residential, commercial, ...
-            "RESALE/NEW_CONSTRUCTION" # M: re-sale, N: new construction
-        ]
-
-        txt_extention = ".txt"
-        
-        def get_data(f: str):
-            if not f.endswith(txt_extention):
-                f = f + txt_extention
-            
-            tmp_df = self._read_n_clean(
-                filename=f,
-                cols_to_keep=cols_to_keep
-            )
-
-            # tmp_df = tmp_df[tmp_df['RESALE/NEW_CONSTRUCTION'] == "N"].reset_index(drop=True)
-
-            return tmp_df
-        
-        dataframes = []
-
-        if not files:
-            for f in tqdm(os.listdir(self._filepath), desc="Deed files"):
-                if f.endswith(txt_extention):
-                    dataframes.append(get_data(f))
+                    # use only the FIPS to run
+                    dataframes.append(get_data(f[5:10]))
         elif isinstance(files, list):
             for f in files:
                 dataframes.append(get_data(f))
@@ -255,79 +253,10 @@ class Preprocess():
 
         return pd.concat(dataframes, ignore_index=True)
 
-    def deed_peep(self, df: pd.DataFrame = None):
-        '''
-        This method served as a simple glimpse of distributions of some
-        variables.
-        '''
-        # if no df provided, do the demo thing: use one of the files
-        # from path.
-        if df is None:
-            filepath = "../Corelogic/bulk_deed_fips_split/"
-            filename = filepath+'fips-01001-UniversityofPA_Bulk_Deed.txt'
-
-            df = pd.read_csv(filename, delimiter="|")
-
-            cols_to_keep = [
-                "FIPS",
-                "PCL_ID_IRIS_FRMTD", # unique key
-                "OWNER_1_LAST_NAME", # empty if is company
-                "OWNER_1_FIRST_NAME&MI", # company name
-                "BLOCK LEVEL LATITUDE",
-                "BLOCK LEVEL LONGITUDE",
-                "SITUS_CITY",
-                "SITUS_STATE",
-                "SITUS_ZIP_CODE",
-                "SELLER NAME1",
-                "SALE AMOUNT", # but after skimming throught, there are several NULL
-                "SALE DATE",
-                "RECORDING DATE",
-                "PROPERTY_INDICATOR", # residential, commercial, ...
-                "OWNER_RELATIONSHIP_RIGHTS_CODE", # not sure will keep this column
-                "RESALE/NEW_CONSTRUCTION" # M: re-sale, N: new construction
-            ]
-            df = df[cols_to_keep]
-
-        # this condition would be meaningless if use processed data
-        # since in our data reading step we filtered with this condition
-        cond_is_new = df['RESALE/NEW_CONSTRUCTION'] == "N"
-        cond_owner_record = df['SELLER NAME1'] == 'OWNER RECORD'
-
-        # check the dist. of 0 sale amount
-        df['is_new'] = cond_is_new
-        df['amt_is_nan'] = pd.isna(df['SALE AMOUNT'])
-        tmp = df.groupby(['is_new', 'amt_is_nan']).size().reset_index(name='counts')
-        print("#####")
-        print(tmp)
-        print("=====")
-
-        df['is_owner'] = cond_owner_record
-        tmp = df.groupby(['is_new', 'is_owner']).size().reset_index(name='counts')
-        print("#####")
-        print(tmp)
-        print("=====")
-
-        # this result is too lengthy, so commented.
-        # tmp = df.groupby(['is_new', 'PROPERTY_INDICATOR']).size().reset_index(name='counts')
-        # print(tmp)
-
-        # df = df[cond1]
-
-        # check what owner rights code might actually means
-        # tmp = df.groupby(['OWNER_RELATIONSHIP_RIGHTS_CODE']).size().reset_index(name='counts')
-        # print(tmp)
-
-        col_to_see = ['SELLER NAME1', 'OWNER_1_FIRST_NAME&MI']
-
-        # print("check owner vs seller name")
-        # print(df[df['SELLER NAME1'] != 'OWNER RECORD'][col_to_see])
-        # print(df[df['SELLER NAME1'] == 'OWNER RECORD'][col_to_see]])
-        return
-    
-    def data_output(self, df: pd.DataFrame, filename: str, out_path: str = "./data/") -> None:
+    def data_output(self, df: pd.DataFrame, filename: str, out_path: str = BULK_PATH+"/processed_data/") -> None:
         if not os.path.exists(out_path):
             os.makedirs(out_path)
-        
+
         if not filename.endswith(".csv"):
             filename = filename + ".csv"
 
@@ -342,76 +271,126 @@ class Preprocess():
         '''
         Don't run this, the file is 10 GB, will freeze your PC.
 
-        This method simply serves as a exploratory analysis of 
+        This method simply serves as a exploratory analysis of
         the company list provided by previous research.
         '''
         filepath = "../Merge_Compustat&Corelogic/"
         filename = filepath+'corelogic_clean.dta'
-        
+
         # comp_list = pd.read_stata(filename)
 
         # print(comp_list.columns)
 
-    def check_apn_match(self):
-        dfs = {}
-        for s in ['Deed', 'Tax']:
-            print(f">>> {s}:")
-            path = f"../Corelogic/bulk_{s.lower()}_fips_split/"
-            tmp = pd.read_csv(f'{path}fips-01011-UniversityofPA_Bulk_{s}.txt', delimiter="|")
-            
-            print(tmp.shape)
-            target_col = 'APN_NUMBER_FORMATTED' if s == 'Tax' else 'PCL_ID_IRIS_FRMTD'
-            dfs[s] = tmp[target_col]
+    def deed_peep(self):
+        data_type_spec = {
+            "APN_UNFORMATTED": 'str', # APN
+            "BATCH-ID": 'str', # actually in the form of yyyymmdd, not the same as sale date
+            "BATCH-SEQ": 'category',
+            # "OWNER_1_LAST_NAME": 'str',
+            # "OWNER_1_FIRST_NAME&MI": 'str',
+            # "SELLER NAME1": 'str', # name of the first seller
+            "SALE AMOUNT": 'str',
+            # "SALE DATE": 'str',
+            # "LAND_USE": 'category', # plz refer to codebook, there are 263 different
+            # "PROPERTY_INDICATOR": 'category', # residential, commercial, refer to top of this code file
+            # "RESALE/NEW_CONSTRUCTION": 'category', # M: re-sale, N: new construction
+            # "INTER_FAMILY": 'category',
+            # "PRI-CAT-CODE": 'category',
+            # "FORECLOSURE": 'category',
+            # "DOCUMENT TYPE": 'category',
+            # "LAND_USE": 'category',
+            # "EQUITY_FLAG": 'category', # not sure what to rule out
+            # "REFI_FLAG": 'category' # not sure what to rule out
+        }
+        dfs = []
+        filename = f"{BULK_PATH}bulk_deed_fips_split/fips-06037-UniversityofPA_Bulk_Deed.txt"
+        for chunk in pd.read_csv(
+            filename, delimiter="|",
+            chunksize=CHUNK_SIZE, # can only work with engine = c or python
+            usecols=data_type_spec.keys(), dtype=data_type_spec,
+            # on_bad_lines=handle_bad_line, # callable can only work with engine = python or pyarrow
+            on_bad_lines='skip', # skip the bad rows for now, guess there won't be many (cannot check tho)
+            engine='c',
+            quoting=csv.QUOTE_NONE
+        ):
+            dfs.append(chunk)
 
-        intersection_cnts = dfs['Tax'].isin(dfs['Deed']).sum()
-        print(intersection_cnts)
+        tmp = pd.concat(dfs, ignore_index=True)
 
+        tmp = tmp.sort_values(by=['APN_UNFORMATTED', 'BATCH-ID', 'BATCH-SEQ', 'SALE AMOUNT']).reset_index(drop=True)
 
-def deed_workflow(p: Preprocess):
-    file_list = [
-        "fips-01001-UniversityofPA_Bulk_Deed", 
-        "fips-01003-UniversityofPA_Bulk_Deed", 
-        "fips-01005-UniversityofPA_Bulk_Deed"
-    ]
-    # file_list = "fips-01001-UniversityofPA_Bulk_Deed"
-    filepath = "../Corelogic/bulk_deed_fips_split/"
-    # if provide no "files", the following method would run through
-    # the filepath
-    data = p.deed_files(files=file_list, filepath=filepath) # 目前覺得吐出來好 (把這個preprocess當工具箱的話應該會是吐出來比較好)
-    print(data.shape)
-    # p.deed_peep(data)
-    # p.data_output(data, 'deed_stacked.csv')
-    
-def tax_workflow(p: Preprocess):
-    file_list = [
-        "fips-01001-UniversityofPA_Bulk_Tax", 
-        "fips-01003-UniversityofPA_Bulk_Tax", 
-        "fips-01005-UniversityofPA_Bulk_Tax"
-    ]
-    filepath = "../Corelogic/bulk_tax_fips_split/"
-    data = p.tax_files(files=file_list, filepath=filepath)
-    print(data.shape)
+        print(tmp.head(35))
 
-# I'm thinking put the work flow into preprocess class
+    def tax_peep(self):
+        data_type_spec = {
+            "APN_NUMBER_UNFORMATTED": 'str', # APN
+            "BATCH_ID": 'str', # actually in the form of yyyymmdd
+            "BATCH_SEQ": 'category',
+            # "OWNER_1_LAST_NAME": 'str',
+            # "OWNER_1_FIRST_NAME": 'str',
+            # "TAX_YEAR": 'category',
+            # "SELLER_NAME": 'str', # just to make sure
+            # "SALE_AMOUNT": 'str', # just to make sure
+            # "SALE_DATE": 'str', # just to make sure
+            # "LAND_SQUARE_FOOTAGE": 'str',
+            # "UNIVERSAL_BUILDING_SQUARE_FEET": 'str',
+            # "BUILDING_SQUARE_FEET_INDICATOR_CODE": 'category', # A: adjusted; B: building; G: gross; H: heated; L: living; M: main; R: ground floor
+            # "BUILDING_SQUARE_FEET": 'str', # doesn't differentiate living and non-living (if lack indicator code)
+            # "LIVING_SQUARE_FEET": 'str'
+        }
+        dfs = []
+        filename = f"{BULK_PATH}bulk_tax_fips_split/fips-06037-UniversityofPA_Bulk_Tax.txt"
+        for chunk in pd.read_csv(
+            filename, delimiter="|",
+            chunksize=CHUNK_SIZE, # can only work with engine = c or python
+            usecols=data_type_spec.keys(), dtype=data_type_spec,
+            # on_bad_lines=handle_bad_line, # callable can only work with engine = python or pyarrow
+            on_bad_lines='skip', # skip the bad rows for now, guess there won't be many (cannot check tho)
+            engine='c',
+            quoting=csv.QUOTE_NONE
+        ):
+            dfs.append(chunk)
+
+        tmp = pd.concat(dfs, ignore_index=True)
+
+        tmp = tmp.sort_values(by=['APN_NUMBER_UNFORMATTED', 'BATCH_ID', 'BATCH_SEQ']).reset_index(drop=True)
+
+        print(tmp.head(50))
+
 
 def main():
     current_date = datetime.now().strftime("%m%d")
-    log = f'deed_{current_date}.log'
+    log = f'{current_date}.log'
 
-    p = Preprocess(log_name=log)
+    # =============
+    #  Experiments
+    # =============
+    # check the duplication of apn in tax and deed
+    p = Preprocess()
+    # p.tax_peep()
+    # p.deed_peep()
 
-    # p.check_apn_match()
+    # ======================
+    #  Stack files together
+    # ======================
+    p = Preprocess()
 
-    # ===========================
-    # Generate Stacked Deed Files
-    # ===========================
-    # deed_workflow(p)
+    file_list = [
+        '01001',
+        '01003',
+        '01005',
+        '06037',
+        '01009',
+        '01011',
+        '01013',
+        '01015',
+        '01017',
+        '04019',
+    ]
+    # if provide no "files", the function would run through whole path
+    data = p.stack_files(files=None)
+    p.data_output(data, f'merged_stacked.csv')
 
-    # ==========================
-    # Generate Stacked Tax Files
-    # ==========================
-    # tax_workflow(p)
-    
 
 if __name__ == "__main__":
     main()
