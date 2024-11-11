@@ -69,7 +69,7 @@ class Preprocess():
         # )
         # split to 1GB files and save. TODO: might also want this to be argument
         dask_bag = db.read_text(
-            filename, blocksize='700MB', encoding='utf-8', errors='ignore'
+            filename, blocksize='300MB', encoding='utf-8', errors='ignore'
         )
 
         # Save each partition to separate files
