@@ -362,7 +362,7 @@ def main():
     #  Process splitted files
     # ========================
     # if outpath specified, the cleaned files would be saved to that dir
-    p.batch_process(BULK_PATH+'deed_2023', outpath='output/deed_2023_cleaned')
+    p.batch_process(BULK_PATH+'deed_2023', outpath=BULK_PATH+'deed_2023_cleaned')
 
     # ===================
     #  Filter Bulk Files
