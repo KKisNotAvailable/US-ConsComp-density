@@ -23,7 +23,7 @@ sns.set_style({
 })
 
 '''NOTES
-(don't need now..., the first column 'FIPS' is actually the counties) 
+(don't need now..., the first column 'FIPS' is actually the counties)
 source of US cities list (Basic ver.): https://simplemaps.com/data/us-cities
 
 DEED COLUMNS:
@@ -56,16 +56,16 @@ class Analysis():
 
     def deed_analysis(self):
         '''
-        This program is checking 
+        This program is checking
         1. if the cities in states are unique
-        2. whether the cities in the geo data for plot is consistent with 
+        2. whether the cities in the geo data for plot is consistent with
            the cities we have
 
         STATEFP (2) + COUNTYFP (3) (from goe data) = county_fips (4 or 5) (from cities list)
         states like CA has STATEFP "06", the 5 digit version would ignore the first 0
         '''
         # put all the analysis or data for check generation here as functions
-        # and since different functions might use the same data, 
+        # and since different functions might use the same data,
         # when first time read the data save it as class attribute, then we can save time on data reading.
         def counties_in_state(out=True):
             '''
@@ -81,7 +81,7 @@ class Analysis():
             states = states[['STATEFP', 'STUSPS']]
 
             counties = pd.merge(counties, states, on='STATEFP', how='left')
-            
+
             out_json = {}
 
             for s in sorted(set(counties['STUSPS'])):
@@ -92,7 +92,7 @@ class Analysis():
             if out:
                 with open(f'{self.__out_path}counties.json', 'w') as fp:
                     json.dump(
-                        out_json, fp, 
+                        out_json, fp,
                         sort_keys=False, indent=4, separators=(',', ': ')
                     )
             else:
@@ -105,9 +105,9 @@ class Analysis():
             ddf = dd.read_csv('data/deed_stacked.csv')
 
             cols_to_clean = [
-                "SITUS_CITY", 
-                "SITUS_STATE", 
-                "SALE AMOUNT", 
+                "SITUS_CITY",
+                "SITUS_STATE",
+                "SALE AMOUNT",
                 "SALE DATE"
             ]
 
@@ -130,7 +130,7 @@ class Analysis():
             if out:
                 with open(f'{self.__out_path}cities.json', 'w') as fp:
                     json.dump(
-                        out_json, fp, 
+                        out_json, fp,
                         sort_keys=False, indent=4, separators=(',', ': ')
                     )
 
@@ -144,18 +144,18 @@ class Analysis():
             # check if PCL_ID_IRIS_FRMTD is distinct (it is not, but should it be?)
             # unique_count = ddf['PCL_ID_IRIS_FRMTD'].nunique().compute()
             # print(f"PCL_ID_IRIS_FRMTD is{' not' if ttl_rows != unique_count else ''} unique key.")
-            
+
             # check the nan distribution of the following columns
             cols_to_clean = [
                 "FIPS",
-                "SITUS_CITY", 
-                "SITUS_STATE", 
-                "SALE AMOUNT", 
+                "SITUS_CITY",
+                "SITUS_STATE",
+                "SALE AMOUNT",
                 "RECORDING DATE",
                 "SALE DATE"
             ]
             # good_counts = ddf[cols_to_clean].count().compute()
-            
+
             # print("Non NA pct for ...")
             # for i, c in enumerate(cols_to_clean):
             #     print(f"  {c:<11}: {good_counts.iloc[i]*100/ttl_rows:>10.5f}%")
@@ -169,7 +169,7 @@ class Analysis():
 
             # there are 1618508 rows with calculated year = 0???
             res = ddf['year'].value_counts().compute().sort_index()
-            
+
             print(res)
             # print(res.head(10))
 
@@ -180,7 +180,7 @@ class Analysis():
             scc_map = pd.read_csv("data/simplemaps_uscities_basicv1.79/uscities.csv")
             scc_map = scc_map[['state_id', 'county_fips', 'zips']]
             print(scc_map.head(5))
-        
+
         def check_abbreviation():
             states = gpd.read_file("data/cb_2018_us_state_500k/")
             # "Puerto Rico", "American Samoa", "United States Virgin Islands"
@@ -192,9 +192,9 @@ class Analysis():
         def check_other_data():
             '''
             'CLIP', 'DEED_ID', 'AS_ASSESSED_YEAR', 'SALE_DATE', 'SALE_YEAR',
-            'SALE_MONTH', 'SALE_AMOUNT', 'SELLER_NAME', 'BUYER_NAME', 'NEW_HOME',    
+            'SALE_MONTH', 'SALE_AMOUNT', 'SELLER_NAME', 'BUYER_NAME', 'NEW_HOME',
             'YEAR_BUILT', 'EFFECTIVE_YEAR_BUILT', 'AS_EFFECTIVE_YEAR_BUILT',
-            'VACANT_FLAG', 'SFH_IND', 'TOWNHOME_IND', 'CONDO_IND', 'PLEX_IND',       
+            'VACANT_FLAG', 'SFH_IND', 'TOWNHOME_IND', 'CONDO_IND', 'PLEX_IND',
             'APARTMENT_IND', 'AS_LAND_SQUARE_FOOTAGE', 'AS_ACRES',
             'AS_BEDROOMS_-_ALL_BUILDINGS', 'AS_TOTAL_ROOMS_-_ALL_BUILDINGS',
             'AS_TOTAL_BATHROOMS_-_ALL_BUILDINGS', 'AS_NUMBER_OF_BATHROOMS',
@@ -202,10 +202,10 @@ class Analysis():
             'AS_STORIES_NUMBER', 'AS_NUMBER_OF_UNITS',
             'AS_UNIVERSAL_BUILDING_SQUARE_FEET', 'LAND_USE_CODE',
             'PROPERTY_IND_CODE', 'AS_LAND_USE_CODE', 'AS_PROPERTY_IND_CODE',
-            'AS_BUILDING_STYLE_CODE', 'ADDRESS_MAIN', 'ADDRESS', 'CITY', 'STATE',    
+            'AS_BUILDING_STYLE_CODE', 'ADDRESS_MAIN', 'ADDRESS', 'CITY', 'STATE',
             'ZIP_CODE', 'AS_CENSUS_ID', 'AS_SUBDIVISION_NAME',
             'AS_SUBDIVISION_TRACT_NUMBER', 'AS_PARCEL_LEVEL_LAT',
-            'AS_PARCEL_LEVEL_LON', 'MORTGAGE_PURCHASE_IND', 'CASH_PURCHASE_IND',     
+            'AS_PARCEL_LEVEL_LON', 'MORTGAGE_PURCHASE_IND', 'CASH_PURCHASE_IND',
             'NOT_SFH', 'FIPS_CODE', 'TEMP_ID'
             '''
             ddf = dd.read_csv(
@@ -219,7 +219,7 @@ class Analysis():
         check_other_data()
 
         return
-    
+
     def deed_prep(self, is_yearly=True, gen_data=False, period=[], scale=""):
         '''
         This method would prepare a deed dataset from the stacked csv for analysis.
@@ -235,7 +235,7 @@ class Analysis():
             can be "states", "counties", or "" (will include both)
 
         Notice:
-        1. we do not calculate the HHI here, since we will calculate HHI for 
+        1. we do not calculate the HHI here, since we will calculate HHI for
            years seperated and aggregated.
         2. the unique seller count is a little hard to present in this dataset
            因為在同state不同county中也可能有同一個seller, 以目前資料設計來看, 這樣依state加總就會失真
@@ -246,7 +246,7 @@ class Analysis():
             "FIPS", # = counties
             "SITUS_STATE", # eg. CA
             "SELLER NAME1",
-            "SALE AMOUNT", 
+            "SALE AMOUNT",
             "RECORDING DATE", # yyyymmdd, int64
             "SALE DATE" # yyyymmdd, int64
         ]
@@ -257,8 +257,8 @@ class Analysis():
         #   1.1 ignore rows if any of those columns is empty
         #   1.2 make the STATEFP column, since there are some typo of SITUS_STATE
         #   1.3 fill the 'SALE DATE' when 0 with 'RECORDING DATE'
-        #   1.4 make the 'year' column 
-        #       (opt.) ignore the rows with 'year' == 0, 
+        #   1.4 make the 'year' column
+        #       (opt.) ignore the rows with 'year' == 0,
         #              should be around 5831 after combining SALE and RECORDING
         #   1.5 (opt.) when period provided, filter the data to contain only the period
 
@@ -282,10 +282,10 @@ class Analysis():
         # 2. group by year, STATEFP, FIPS
         #   2-1. count cases
         #   2-2. sum "SALE AMOUNT"
-        
+
         if not scale:
             grouped_results = {
-                "FIPS": None, 
+                "FIPS": None,
                 "STATEFP": None
             }
         else:
@@ -308,7 +308,7 @@ class Analysis():
                     .rename('uniq_seller_cnt')\
                     .compute()
             ]
-            
+
             # for computing Herfindahl-Hirschman Index
             full_list = ddf.groupby(group_base + ['SELLER NAME1'])\
                 .agg(
@@ -317,11 +317,11 @@ class Analysis():
                 )\
                 .reset_index()\
                 .compute()
-            
+
             TOP_N = 50 # defined by HHI
             # since 'full_list' is not large, using apply is reasonable
             # top 50 case_cnt and sale_amt
-            # NOTE: grp means the groups during the group by process, 
+            # NOTE: grp means the groups during the group by process,
             #       we can treat each of them as a pd.series and apply operations accordingly
             to_cat.extend([
                 full_list.groupby(group_base)['case_cnt']\
@@ -344,11 +344,11 @@ class Analysis():
                     )\
                     .rename('HHI_sale_amt')
             ])
-            
+
             # concat horizontally
             grouped_results[c] = pd.concat(to_cat, axis=1).reset_index()\
                 .sort_values(by=group_base, ascending=[True] * len(group_base))
-            
+
             # give the states their abbreviation
             if c == 'STATEFP':
                 states = gpd.read_file("data/cb_2018_us_state_500k/")
@@ -360,9 +360,9 @@ class Analysis():
                     tmp = tmp[['year'] + [col for col in tmp.columns if col != 'year']]
 
                 grouped_results[c] = tmp
-                # 這裡可以考慮把grouped_results 裡的 'STATEFP' 刪掉換成 'STUSPS' 
+                # 這裡可以考慮把grouped_results 裡的 'STATEFP' 刪掉換成 'STUSPS'
                 # (for consistancy with other functions)
-            
+
         if gen_data:
             for c, res in grouped_results.items():
                 fname = f"agg_result_{c}.csv"
@@ -375,7 +375,6 @@ class Analysis():
             return grouped_results['FIPS'] if scale == 'counties' else grouped_results['STATEFP']
         return
 
-    
     def deed_plot_heat_map(self, filename, scale='states', save_fig=False):
         '''
         REF: https://dev.to/oscarleo/how-to-create-data-maps-of-the-united-states-with-matplotlib-p9i
@@ -384,7 +383,7 @@ class Analysis():
         2. current only has abbrev. of states
 
         TODO: need to change this to be able to plot both state and counties
-        '''        
+        '''
         if not scale in ['states', 'counties']:
             print("Please state a valid scale, either 'states' or 'counties'")
             return
@@ -395,7 +394,7 @@ class Analysis():
             df.loc[:, "geometry"] = df.geometry.scale(xfact=scale, yfact=scale, origin=center)
             df.loc[:, "geometry"] = df.geometry.rotate(rotate, origin=center)
             return df
-        
+
         def adjust_maps(df):
             df_main_land = df[~df.STATEFP.isin(["02", "15"])]
             df_alaska = df[df.STATEFP == "02"]
@@ -419,7 +418,7 @@ class Analysis():
             columns={
                 cur_scale: scale_new_name,
                 cur_hhi: 'HHI'
-            }, 
+            },
             inplace=True
         )
 
@@ -461,9 +460,9 @@ class Analysis():
                         break
 
             return colors
-        
+
         cur_geo = states if scale == 'states' else counties
-        
+
         to_plot = pd.merge(cur_geo, HHI, on=scale_new_name, how='left')
         # since there will be some counties that has no HHI data, we fill them with 0
         to_plot[['HHI', 'case_cnt']] = to_plot[['HHI', 'case_cnt']].fillna(0)
@@ -483,13 +482,13 @@ class Analysis():
         else:
             plt.show()
         return
-    
+
     def deed_plot_time_series(self, filename, save_fig=False):
         '''
-        This function only considers plotting for all the states, 
+        This function only considers plotting for all the states,
         since including all the counties in one plot would be chaos.
 
-        Also this function might also support plotting for a given state or county. 
+        Also this function might also support plotting for a given state or county.
         (the corresponding data shold be provided though)
         '''
         f = self.__out_path + filename
@@ -531,21 +530,21 @@ class Analysis():
         else:
             plt.show()
         return
-    
+
     def deed_plot_scatter(self, period, filename, cur_index="HHI", filter_outlier=False, save_fig=False):
         '''
-        This function plots the scatter plot of HHI, with x-axis being the 
+        This function plots the scatter plot of HHI, with x-axis being the
         county-level HHI and the y-axis being the house price change.
 
         Currently, since we have only the aggregated case count and sale amt
-        for counties, we assume all the properties have the same size, and use 
+        for counties, we assume all the properties have the same size, and use
         the average sale value as the housing price for each county.
         Still, we'll ignore the data with limited case count to avoided biased HHI.
 
         Parameters
         ----------
         period: [start_year, end_year], list of int
-            specify the time period, where the HHI will be calculated with the data 
+            specify the time period, where the HHI will be calculated with the data
             in this range, and the price change will be the pct change from start_year
             to end_year.
         cur_index: "HHI" or "ENI", str
@@ -570,7 +569,7 @@ class Analysis():
             print("File found. Data loaded from file.")
         else:
             df = pd.read_csv(self.__out_path+filename)
-            
+
             # 1. make the county/state column
             sub_df = pd.DataFrame(sorted(set(df[cur_scale_col])), columns=[cur_scale_col])
 
@@ -583,7 +582,7 @@ class Analysis():
                 tmp.columns = [cur_scale_col] + new_colname
                 sub_df = pd.merge(sub_df, tmp, on=cur_scale_col, how='left')
 
-            # 3. make the HHI for the designated period 
+            # 3. make the HHI for the designated period
             #    (if takes too long, the deed_prep step can output a csv and read it when future call)
             period_hhi = self.deed_prep(
                 is_yearly=False, gen_data=False, period=period, scale=cur_scale
@@ -603,7 +602,7 @@ class Analysis():
 
             # And generate the file for future use
             sub_df.to_csv(file_for_plot, index=False)
-        
+
         # Filter outliers, currently using the interquartile range, IQR, method
         # can consider other method like z-score, percentage, or std dev.
         fo_remark = ""
@@ -617,7 +616,7 @@ class Analysis():
             # Filter out the outliers
             sub_df = sub_df[(sub_df['price_chg'] >= lower_bound) & (sub_df['price_chg'] <= upper_bound)]
 
-        # 6. plot the percetage change with HHI as the scatter plot, 
+        # 6. plot the percetage change with HHI as the scatter plot,
         #    can consider add legend
         plt.figure(figsize=(self.sizex, self.sizey))
         plt.scatter(sub_df[hhi_col], sub_df['price_chg'], color='blue', edgecolor='k', alpha=0.5)
@@ -635,7 +634,7 @@ class Analysis():
 
 
         return
-    
+
     def make_hhi_panel(self, filename, gen_data=False):
         '''
         The data is generated by this: deed_prep(is_yearly=True, gen_data=True)
@@ -648,7 +647,7 @@ class Analysis():
             cur_scale_col = 'STUSPS'
 
         df = pd.read_csv(self.__out_path+filename)
-        
+
         start_year = 1999 # since using 1987 would eliminate too many entries
         end_year = max(df['year'])
         cur_thresh = self.threshold
@@ -682,7 +681,7 @@ class Analysis():
         df = pd.concat(regions_to_cat, axis=0).reset_index(drop=True)
 
         cols_to_keep = [
-            'year', 'FIPS', 'case_cnt', 'sale_amt', 'avg_price', 
+            'year', 'FIPS', 'case_cnt', 'sale_amt', 'avg_price',
             'price_chg_pct', 'HHI', 'ENI'
         ]
         df = df[cols_to_keep]
@@ -701,7 +700,7 @@ class Analysis():
 
         filename = self.__out_path + filename
         df.to_csv(filename, index=False)
-        
+
         print("DONE")
 
 
