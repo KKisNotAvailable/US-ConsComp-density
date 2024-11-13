@@ -29,19 +29,20 @@ https://www.census.gov/topics/housing.html
 ### Regression Analysis
 #### need more data
 > county-level info
-  1. [done] yearly population
+  1. [DONE] yearly population
      https://www.census.gov/data/tables/time-series/demo/popest/2020s-counties-total.html 下面的archive: Dataset
      >> 2000-2009: 2000-2009/counties/totals/co-est2009-alldata.csv
      >> 2010-2019: 2010-2019/counties/totals/co-est2019-alldata.csv
      >> 2020-2023: 2020-2023/counties/totals/co-est2023-alldata.csv
-  2. [???] number / dollar amount of properties sold (both first and second hand)
+  2. [DONE] number / dollar amount of properties sold (both first and second hand)
      not down to even state level: https://www.census.gov/construction/nrs/data/series.html
-  3. [done] housing stock
+     >> will use data directly from CoreLogic
+  3. [DONE] housing stock
      https://www.census.gov/data/tables/time-series/demo/popest/2020s-total-housing-units.html 下面的archive: Dataset (會進到跟上面population一樣的地方)
      >> 2000-2009: 2000-2009/housing/totals/hu-est2009-us.csv
      >> 2010-2020: 2010-2020/housing/HU-EST2020_ALL.csv
      >> 2020-2023: 中間一堆state的地方按第一個 United States: CO-EST2023-HU.xlsx
-  4. [done] vacancy rate
+  4. [DONE] vacancy rate
      https://www.census.gov/housing/hvs/data/prevann.html
      裡面有homeowner vac, gross vac, year-round vac (4~5a), def見第一PDF
   5. [half_done] median number of days property listings spend on the market (類似周轉率)
@@ -59,7 +60,7 @@ https://www.census.gov/topics/housing.html
 > construction company characteristics (from compustat)
 
 #### Filter conditions of CoreLogic
-1. 
+1.
 
 ### [Plot] Company-specific responses through house price cycles
 (幾乎都是好壞時期的比較)
