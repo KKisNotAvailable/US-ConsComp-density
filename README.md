@@ -55,6 +55,8 @@ https://www.census.gov/topics/housing.html
      >> county (48039): https://data.bls.gov/dataViewer/view/timeseries/LAUCN480390000000004
      >> state (06): https://data.bls.gov/dataViewer/view/timeseries/LASST060000000000003
   8. [???] 一些供給面的 (eg. construction cost, Wharton Residential Land Use Regulation Index, and land availability index?)
+     >> construction: https://fred.stlouisfed.org/tags/series?t=construction%3Bprice+index
+     >> WRLURI: https://real-faculty.wharton.upenn.edu/gyourko/land-use-survey/ (2006 & 2018)
   9. [???] weather condition (有無自然災害影響 => should be some yearly binary code per county?)
      https://www.ngdc.noaa.gov/hazard/
 > construction company characteristics (from compustat)
