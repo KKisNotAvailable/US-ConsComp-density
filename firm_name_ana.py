@@ -37,7 +37,10 @@ class FirmAnalysis():
 
     def __unique_names_to_file(self, source: str):
         '''
-
+        Get unique names for CoreLogic and Compustat.
+        CoreLogic used the cleaned and stacked 2016 data, and will filter only
+        the new constructions to get the seller names as the company name.
+        Compustat use the ~2016 yearly data (so would include firms other than builders).
         '''
         # 1. Check the existance of the unique firm name list
         out_file = f'{DATA_PATH}firm_names_{source}.csv'
@@ -294,6 +297,23 @@ class FirmAnalysis():
         # 1. MOSAIC USA => if we are going to check if a builder is operating cross counties or states
         # 2. is XXX LLC and XXX CO the same company?
 
+    def merge_corelogic_compustat(self, core_file, comp_file, outname: str = ""):
+        if not outname:
+            outname = "get_comp_keys.csv"
+
+        outname = DATA_PATH + outname
+
+        merged = pd.merge(core_file, comp_file, on=ALIGN_NAME_COL, how='left')
+
+        have_record = merged.dropna(subset=['gvkey']).reset_index(drop=True)
+        from_top = merged.dropna(subset=['from_top_list']).reset_index(drop=True)
+
+        print(f"Original > cases: {sum(merged['count'])}, company: {merged.shape[0]}, cleaned unique: {merged[ALIGN_NAME_COL + "_new"].nunique()}")
+        print(f"From top 200 > {sum(from_top['count'])}, company: {from_top['from_top_list'].nunique()}")
+        print(f"Merged > cases: {sum(have_record['count'])}, company: {have_record.shape[0]}")
+
+        # merged.to_csv(outname, index=False)
+
 def fuzzy_correct_example(df):
     correct_words = {
         'PACIFC': 'PACIFIC',
@@ -324,7 +344,19 @@ def main():
     p = FirmAnalysis()
 
     # p.get_cleaned_names(COMPUSTAT)
-    p.get_cleaned_names(CORELOGIC)
+    # p.get_cleaned_names(CORELOGIC)
+
+    # ================================================
+    #  Merge seller names in CoreLogic with Compustat
+    # ================================================
+    core_file = pd.read_csv(f"{DATA_PATH}firm_names_corelogic_matched.csv")
+    comp_file = pd.read_excel(f"{OLD_FILES}Merge_Compustat&Corelogic/merge_corelogic_compustat.xlsx")
+    comp_file = comp_file[['seller_name_original', 'gvkey']]\
+        .rename(columns={'seller_name_original': ALIGN_NAME_COL})
+
+    p.merge_corelogic_compustat(
+        core_file=core_file, comp_file=comp_file
+    )
 
     # Testing fuzz
     # print(fuzz.ratio("CENTENNIAL", "CENTEX")) # 71
