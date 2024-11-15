@@ -45,7 +45,7 @@ https://www.census.gov/topics/housing.html
   4. [DONE] vacancy rate
      https://www.census.gov/housing/hvs/data/prevann.html
      裡面有homeowner vac, gross vac, year-round vac (4~5a), def見第一PDF
-  5. [half_done] median number of days property listings spend on the market (類似周轉率)
+  5. [???] median number of days property listings spend on the market (類似周轉率)
      https://www.realtor.com/research/data/ => monthly inventory => county, historical data (2016.07-)
   6. [need_scrap] median household income (to measure affordability)
      https://fred.stlouisfed.org/searchresults?st=county+level+median+household+income
@@ -55,10 +55,10 @@ https://www.census.gov/topics/housing.html
      >> county (48039): https://data.bls.gov/dataViewer/view/timeseries/LAUCN480390000000004
      >> state (06): https://data.bls.gov/dataViewer/view/timeseries/LASST060000000000003
   8. [???] 一些供給面的 (eg. construction cost, Wharton Residential Land Use Regulation Index, and land availability index?)
-     >> construction: https://fred.stlouisfed.org/tags/series?t=construction%3Bprice+index
+     >> construction: https://fred.stlouisfed.org/tags/series?t=construction%3Bprice+index => [WhichToUse?]
      >> WRLURI: https://real-faculty.wharton.upenn.edu/gyourko/land-use-survey/ (2006 & 2018)
-  9. [???] weather condition (有無自然災害影響 => should be some yearly binary code per county?)
-     https://www.ngdc.noaa.gov/hazard/
+  9. [DONE] weather condition (有無自然災害影響 => should be some yearly binary code per county?)
+     >> https://www.fema.gov/data-visualization/disaster-declarations-states-and-counties
 > construction company characteristics (from compustat)
 
 #### Filter conditions of CoreLogic
