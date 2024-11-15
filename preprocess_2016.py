@@ -11,8 +11,10 @@ warnings.filterwarnings("ignore")
 
 CUR_SYS  = platform.system()
 
-BULK_PATH = "F:/" if CUR_SYS == 'Windows' else '/Volumes/KINGSTON/'
-BULK_PATH += "CoreLogic/2016_files/Corelogic/"
+EXT_DISK = "F:/" if CUR_SYS == 'Windows' else '/Volumes/KINGSTON/'
+EXT_DISK += "Homebuilder/2016_files/"
+BULK_PATH = EXT_DISK + "Corelogic/"
+OUT_PATH = EXT_DISK + "processed_data/"
 
 '''HIGH LEVEL IDEA
 Frist extract columns and stack all the data from the same path
@@ -253,7 +255,7 @@ class Preprocess():
 
         return pd.concat(dataframes, ignore_index=True)
 
-    def data_output(self, df: pd.DataFrame, filename: str, out_path: str = BULK_PATH+"/processed_data/") -> None:
+    def data_output(self, df: pd.DataFrame, filename: str, out_path: str = BULK_PATH) -> None:
         if not os.path.exists(out_path):
             os.makedirs(out_path)
 
