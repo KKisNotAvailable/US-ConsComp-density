@@ -14,7 +14,7 @@ CUR_SYS  = platform.system()
 EXT_DISK = "F:/" if CUR_SYS == 'Windows' else '/Volumes/KINGSTON/'
 EXT_DISK += "Homebuilder/2016_files/"
 BULK_PATH = EXT_DISK + "Corelogic/"
-OUT_PATH = EXT_DISK + "processed_data/"
+OUT_PATH = EXT_DISK + "cleaned_by_county/"
 
 '''HIGH LEVEL IDEA
 Frist extract columns and stack all the data from the same path
@@ -255,7 +255,54 @@ class Preprocess():
 
         return pd.concat(dataframes, ignore_index=True)
 
-    def data_output(self, df: pd.DataFrame, filename: str, out_path: str = BULK_PATH) -> None:
+    def clean_one_save_one(self, out_path: str, files = None) -> pd.DataFrame:
+        '''
+        The actions done here will be based on the data type of "files"
+        str: on single file
+        list: on the list of files
+        None: all of the files in the directory
+        '''
+        txt_extention = ".txt"
+
+        def get_data(fips: str):
+            cleaned_data = {}
+            for cur_type in ['deed', 'tax']:
+                cleaned_data[cur_type] = self._read_n_clean(
+                    filename=f'{BULK_PATH}bulk_{cur_type}_fips_split/fips-{fips}-UniversityofPA_Bulk_{cur_type.capitalize()}.txt',
+                    deed_or_tax=cur_type
+                )
+            return cleaned_data['deed'].merge(cleaned_data['tax'],
+                                              on='APN_UNFORMATTED', how='left')
+
+
+        if not files:
+            # loop through one of the folder to get
+            for f in tqdm(os.listdir(self.__ref_filepath), desc=f"Merging files"):
+                if f.endswith(txt_extention):
+                    # use only the FIPS to run
+                    fips = f[5:10]
+                    self.data_output(
+                        df=get_data(fips),
+                        filename=f"{fips}.csv",
+                        out_path=out_path
+                    )
+        elif isinstance(files, list):
+            for f in files:
+                self.data_output(
+                    df=get_data(f),
+                    filename=f"{f}.csv",
+                    out_path=out_path
+                )
+        else:
+            self.data_output(
+                df=get_data(files),
+                filename=f"{files}.csv",
+                out_path=out_path
+            )
+
+        return
+
+    def data_output(self, df: pd.DataFrame, filename: str, out_path: str) -> None:
         if not os.path.exists(out_path):
             os.makedirs(out_path)
 
@@ -266,7 +313,7 @@ class Preprocess():
             filename = out_path + filename
 
         df.to_csv(f'{filename}', index=False)
-        print(f"{filename} generated.")
+        # print(f"{filename} generated.")
         return
 
     def __check_company_list(self):
@@ -380,19 +427,25 @@ def main():
     file_list = [
         '01001',
         '01003',
-        '01005',
-        '06037',
-        '01009',
-        '01011',
-        '01013',
-        '01015',
-        '01017',
-        '04019',
+        # '01005',
+        # '06037',
+        # '01009',
+        # '01011',
+        # '01013',
+        # '01015',
+        # '01017',
+        # '04019',
     ]
     # if provide no "files", the function would run through whole path
-    data = p.stack_files(files=None)
-    p.data_output(data, f'merged_stacked.csv')
+    p.clean_one_save_one(files=None, out_path=OUT_PATH)
 
+    # Currently don't consider generating stack file, because the outfile would
+    # be about 7GB, making later analysis difficult, where invole plenty of
+    # operations that explode the memory...
+    # data = p.stack_files(files=None)
+    # p.data_output(data, f'merged_stacked.csv', out_path=EXT_DISK+"processed_data/")
+
+    print("Done")
 
 if __name__ == "__main__":
     main()
