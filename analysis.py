@@ -1,6 +1,8 @@
 import dask.dataframe as dd
+from dask.distributed import Client
 import pandas as pd
 import os
+import platform
 import seaborn as sns
 import geopandas as gpd
 import matplotlib.pyplot as plt
@@ -9,8 +11,11 @@ import json
 import warnings
 warnings.filterwarnings("ignore")
 
-from PIL import Image
-from matplotlib.patches import Patch, Circle
+CUR_SYS  = platform.system()
+
+EXT_DISK = "F:/" if CUR_SYS == 'Windows' else '/Volumes/KINGSTON/'
+EXT_DISK += "Homebuilder/2016_files/"
+STACKED_PATH = EXT_DISK + "processed_data/"
 
 # setting image theme with seaborn
 edge_color = "#30011E"
@@ -54,7 +59,7 @@ class Analysis():
         if not os.path.isdir(out_path):
             os.mkdir(out_path)
 
-    def deed_analysis(self):
+    def deed_test_analysis(self):
         '''
         This program is checking
         1. if the cities in states are unique
@@ -220,7 +225,18 @@ class Analysis():
 
         return
 
-    def deed_prep(self, is_yearly=True, gen_data=False, period=[], scale=""):
+    def data_prep(self, data):
+        '''
+
+        '''
+
+        # Count non-null values per column
+        resale_non_null_counts = data[data['RESALE/NEW_CONSTRUCTION'] == 'M'].count().compute()
+        new_non_null_counts = data[data['RESALE/NEW_CONSTRUCTION'] == 'N'].count().compute()
+        print("Resale", resale_non_null_counts)
+        print("New", new_non_null_counts)
+
+    def __archive_deed_prep(self, is_yearly=True, gen_data=False, period=[], scale=""):
         '''
         This method would prepare a deed dataset from the stacked csv for analysis.
         Specifically, this data is stacked data grouped by year, state, fips.
@@ -230,7 +246,8 @@ class Analysis():
         ----------
         is_yearly:
         gen_data:
-        period:
+        period: list.
+            if not porvided would use all the years available.
         scale: str.
             can be "states", "counties", or "" (will include both)
 
@@ -705,18 +722,54 @@ class Analysis():
 
 
 def main():
+    client = Client(n_workers=1, threads_per_worker=6, memory_limit='10GB')
+
     a = Analysis()
 
-    # =========
-    #  Testing
-    # =========
-    a.deed_analysis()
+    # ================
+    #  Basic Cleaning
+    # ================
+    types_spec = {
+        "FIPS": 'category',
+        "APN_UNFORMATTED": 'str',
+        "BATCH-ID": 'str', # in the form of yyyymmdd, but not the same as sale date
+        "BATCH-SEQ": 'str',
+        "SELLER_NAME1": 'str',
+        "SALE_DATE": 'str',
+        "SALE_AMOUNT": 'str',
+        "LAND_USE": 'category',
+        "PROPERTY_INDICATOR": 'category',
+        "RESALE/NEW_CONSTRUCTION": 'category', # M: re-sale, N: new construction
+        "BUYER_NAME_1": 'str',
+        "LAND_SQUARE_FOOTAGE": 'str',
+        "UNIVERSAL_BUILDING_SQUARE_FEET": 'str',
+        "BUILDING_SQUARE_FEET_INDICATOR_CODE": 'category', # A: adjusted; B: building; G: gross; H: heated; L: living; M: main; R: ground floor
+        "BUILDING_SQUARE_FEET": 'str', # doesn't differentiate living and non-living (if lack indicator code)
+        "LIVING_SQUARE_FEET": 'str',
+    }
+
+    ddf = dd.read_csv(
+        STACKED_PATH+"merged_stacked.csv",
+        blocksize='300MB',
+        usecols=list(types_spec.keys()), # need to be subscriptable (use [0] to access elms)
+        dtype=types_spec
+    )
+
+    to_num = [
+        "SALE_AMOUNT", "LAND_SQUARE_FOOTAGE", "UNIVERSAL_BUILDING_SQUARE_FEET",
+        "BUILDING_SQUARE_FEET", "LIVING_SQUARE_FEET"
+    ]
+
+    for col in to_num:
+        # if not number, turn to NaN
+        ddf[col] = dd.to_numeric(ddf[col], errors='coerce')
 
     # =====================================
     #  Generates the HHI data for plotting
     # =====================================
-    # a.deed_prep(is_yearly=True, gen_data=True)
-    # a.deed_prep(is_yearly=False, gen_data=True)
+    a.data_prep(data=ddf)
+
+    client.close()
 
     # ==========
     #  Plotting
