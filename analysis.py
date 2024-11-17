@@ -1,12 +1,15 @@
 import dask.dataframe as dd
 from dask.distributed import Client
 import pandas as pd
+import re
 import os
 import platform
+from tqdm import tqdm
 import seaborn as sns
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
+from rapidfuzz import process, fuzz
 import json
 import warnings
 warnings.filterwarnings("ignore")
@@ -15,7 +18,11 @@ CUR_SYS  = platform.system()
 
 EXT_DISK = "F:/" if CUR_SYS == 'Windows' else '/Volumes/KINGSTON/'
 EXT_DISK += "Homebuilder/2016_files/"
+COUNTY_FILE_PATH = EXT_DISK + "cleaned_by_county/"
 STACKED_PATH = EXT_DISK + "processed_data/"
+
+TXT_EXT = '.txt'
+CSV_EXT = '.csv'
 
 # setting image theme with seaborn
 edge_color = "#30011E"
@@ -26,6 +33,18 @@ sns.set_style({
     "figure.facecolor": background_color,
     "axes.facecolor": background_color,
 })
+
+# Some univeral string
+COL_YR = 'YEAR'
+COL_QTR = 'QUARTER'
+COL_RESALE_NEW = 'RESALE/NEW_CONSTRUCTION'
+COL_REGION = 'REGION' # TODO: need to make sure how they actually call this. West, North...
+COL_UNIT_P = 'UNIT_PRICE'  # per square feet
+COL_SELLER = 'SELLER_NAME1'
+COL_SALE_AMT = 'SALE_AMOUNT'
+COL_CASE_CNT = 'CASE_CNT'
+COL_RK_FLAG = 'RANK_FLAG'
+COL_BLDG_AREA = 'UNIVERSAL_BUILDING_SQUARE_FEET'
 
 '''NOTES
 (don't need now..., the first column 'FIPS' is actually the counties)
@@ -45,7 +64,7 @@ GEO COLUMNS:
 '''
 
 class Analysis():
-    def __init__(self, out_path: str = "./output/", hhi_base='sale_amt') -> None:
+    def __init__(self, out_path: str, hhi_base='sale_amt') -> None:
         self.__out_path = out_path
         self.hhi_base = hhi_base
         self.threshold = 20
@@ -225,16 +244,319 @@ class Analysis():
 
         return
 
-    def data_prep(self, data):
+    def __clean_firm_names(self, data):
         '''
+        Current version does not include the info from compustat and top 200
+        builders, now simply clean the seller names in the file to make similar
+        names able to be grouped together.
 
+        Note that this version is a bit different with the name analysis file.
+
+        The high level idea is to first use fuzzy match to clean typo, then
+        align words with abbrviations, and finally remove some abbrv and suffixes
+        to match firm names.
         '''
+        # Keep rows starts with an alphabet or a number, this also prevents code below from directly modify original data.
+        data = data[data[COL_SELLER].str.match(r'^[A-Za-z0-9]', na=False)]
 
-        # Count non-null values per column
-        resale_non_null_counts = data[data['RESALE/NEW_CONSTRUCTION'] == 'M'].count().compute()
-        new_non_null_counts = data[data['RESALE/NEW_CONSTRUCTION'] == 'N'].count().compute()
-        print("Resale", resale_non_null_counts)
-        print("New", new_non_null_counts)
+        # If leading is 0 and second is alphabet, replace 0 with O
+        data[COL_SELLER] = data[COL_SELLER].map(
+            lambda x: re.sub(r'^0([A-Za-z])', r'O\1', x)
+        )
+
+        # Some of the words have spaces, explicitly clean them
+        data[COL_SELLER] = data[COL_SELLER].str.replace(r'\bHOME\s+BUILDER', 'HOMEBUILDER', regex=True)
+
+        # "-" to spaces
+        data[COL_SELLER] = data[COL_SELLER].str.replace('-', ' ', regex=False)
+
+        # Apply fuzzy match on specific words for fixing 'er' or 's' in the end of words
+        # TODO: currently including 'HOME' because it was matched to HOMEBUILDERS rather than HOMES
+        abbrvs = {
+            "LANE": "LN", "AVENUE": "AVE", "STREET": "ST", "ROAD": "RD",
+            "DEVELOPER": "DEV", "DEVELOPMENT": "DEV", "REALTY": "RLTY",
+            "ASSOCS": "ASSOC", "ASSOCIATES": "ASSOC", "HOMES": "HMS",
+            "HOME": "HMS", "COMPANY": "CO", "GROUP": "GRP", "COPRORATION": "CORP",
+            "LIMITED": "LTD", "CENTER": "CTR", "PARTNERSHIP": "PTSHP",
+            "LIABILITY": "L", "HOUSING": "HSNG", "PACIFIC": "PAC",
+            "HOLDINGS": "HLDNGS", "CONSTRUCTION": "CONST", "PROPERTIES": "PROP",
+            "MANAGEMENT": "MGMT", "VENTURE": "VENTURES",
+            "HOMEBUILDERS": "BUILDERS", "BUILDERS": "BUILDERS"
+        }
+        score_threshold = 90
+
+        def fuzzy_match(word):
+            # Fuzzy match each word against the list of correct words
+            match, score, *_ = process.extractOne(word, abbrvs.keys())
+            if score >= score_threshold:
+                return match
+            else:
+                return word
+
+        def fuzzy_correct(name: str):
+            name = re.sub(r'[^A-Za-z0-9\s]', '', name)  # Keeps letter, numbers, spaces
+            corrected_words = [fuzzy_match(word) for word in name.split()]
+            return ' '.join(corrected_words)
+
+        data[COL_SELLER] = data[COL_SELLER].map(fuzzy_correct)
+
+        # [Extra step]: delete everything behind ' HOMES'
+        # (this was by obervation, when firm names include HOMES, their names
+        #  normally end with HOMES, things behind HOMES are just redundant)
+        data[COL_SELLER] = data[COL_SELLER].str.replace(r'( HOMES) (.*)', r'\1', regex=True)
+
+        # 2-3. replace with abbreviation, eg. "LANE" => "LN"
+        def use_abbrv(name: str):
+            '''This corrects words in single company name'''
+            abbrved_words = [abbrvs.get(w, w) for w in name.split()]
+            return ' '.join(abbrved_words)
+
+        data[COL_SELLER] = data[COL_SELLER].map(use_abbrv)
+
+        # [Extra step]: turn HMS back to HOMES (this was designed for matching with top200)
+        data[COL_SELLER] = data[COL_SELLER].str.replace(' HMS', ' HOMES', regex=False)
+
+        # 2-4. remove surfix and numbers at the end of name
+        to_remove = [
+            'LLC', 'LL', 'LLLP', 'INC', 'INS', 'IN', 'LTD', 'LP', 'L', 'P', 'C',
+            'CO', 'AVE', 'PTSHP', "I", "II", "III", "IV", "V", "VI", "VII",
+            "VIII", "IX", "X", "XI", "XII", "XIII", "XIV", "XV", "XVI", "XVII",
+            "XVIII", "XIX", "XX", 'KTD', 'LC', 'CORP', 'LN', 'NC'
+        ]
+        # Create regex pattern that matches these suffixes at the end
+        pattern = r'\b(?:' + '|'.join(to_remove) + r'|\d+)\b(?:\s+|$)$'
+
+        def clean_suffixes(name):
+            # Repeatedly remove suffixes until none are left at the end
+            while re.search(pattern, name):
+                name = re.sub(pattern, '', name).strip()  # Remove suffix and any trailing spaces
+            return name
+
+        data[COL_SELLER] = data[COL_SELLER].map(clean_suffixes)
+
+        return data
+
+    def __county_file_clean(self, cur_fips, types_spec: dict):
+        # the county file could include no new construction or even no data at all
+        df = pd.read_csv(
+            f"{COUNTY_FILE_PATH}{cur_fips}.csv",
+            usecols=types_spec.keys(),
+            dtype=types_spec
+        )
+        # in the loop calling this function, returned empty will be ignored.
+        if df.empty: return df
+
+        to_num = [
+            "SALE_AMOUNT", "LAND_SQUARE_FOOTAGE", "UNIVERSAL_BUILDING_SQUARE_FEET",
+            "BUILDING_SQUARE_FEET", "LIVING_SQUARE_FEET"
+        ]
+        for col in to_num:
+            if col in types_spec.keys():
+                # if not number, turn to NaN
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+
+
+        # ====================
+        #  General preprocess
+        # ====================
+        # 1. PROPERTY_INDICATOR: keep single family (10), condo (11), vacant (80),
+        #                        duplex & tri... (21), apartment (22), misc (00)
+        #    => since we've already filtered with land_use for broadly speaking residential use,
+        #       we'll keep vacant and miscellaneous here.
+        keep_list = ['10', '11', '80', '21', '22', '00']
+        df = df[df['PROPERTY_INDICATOR'].isin(keep_list)]
+
+        # 2. make year and quarter from SALE_DATE (str, eg. 20101231), drop those not numeric
+        df = df[df['SALE_DATE'].str.isnumeric()].reset_index(drop=True)
+        df[COL_YR] = df['SALE_DATE'].str[:4]  # still string
+        # (month-1) // 3 + 1 = Q
+        # df[COL_QTR] = (pd.to_numeric(df['SALE_DATE'].str[4:6]) - 1) // 3 + 1  # int
+
+        # 3. calculate unit price
+        df[COL_UNIT_P] = df[COL_SALE_AMT] / df[COL_BLDG_AREA]
+
+        # 4. process the seller names
+        df = self.__clean_firm_names(df)
+
+
+        # ========
+        #  Resale
+        # ========
+        df_resale = df[df[COL_RESALE_NEW] != 'N']
+
+        grouped_resale = df_resale.groupby(COL_YR).agg(
+            RESALE_SALE_AMOUNT=(COL_SALE_AMT, 'sum'),
+            RESALE_CASE_CNT=(COL_SELLER, 'count')
+        ).reset_index()
+
+        no_new_out_df = grouped_resale
+        no_new_out_df['FIPS'] = cur_fips
+
+
+        # ==================
+        #  New construction
+        # ==================
+        df_new = df[df[COL_RESALE_NEW] == 'N']
+
+        # if there are no entry of new constructions, return just the aggregated
+        # sale_amt and case_cnt of resale
+        if df_new.empty: return no_new_out_df
+
+        key_set = [COL_YR, COL_SELLER]
+
+        # 1. group by year and seller (discard OWNER RECORD), get
+        #    (1) sum of sale_amt (2) count occurance => case_cnt (3) mean of unit price
+        #    and sort by year (asc), case count (desc)
+        grouped_new = df_new.groupby(key_set).agg(
+            SALE_AMOUNT=(COL_SALE_AMT, 'sum'),
+            CASE_CNT=(COL_SELLER, 'count')
+        ).reset_index()
+
+        # some records have empty building area, ignore them when getting avg
+        df_new_unit_price = df_new[df_new[COL_BLDG_AREA] != 0]
+        gped_new_unit_p = df_new_unit_price.groupby(key_set).agg(
+            UNIT_PRICE=(COL_UNIT_P, 'mean')
+        ).reset_index()
+
+        grouped_new = grouped_new.merge(gped_new_unit_p, on=key_set, how='left')
+
+        # Sort by year (ascending) and case_cnt (descending)
+        grouped_new = grouped_new\
+            .sort_values(by=[COL_YR, COL_CASE_CNT], ascending=[True, False])\
+            .reset_index(drop=True)
+
+
+        # 2. make ranking flag column
+        def assign_rank_flags(group: pd.DataFrame):
+            # Sort sellers by case_cnt and sale_amt in descending order
+            group = group\
+                .sort_values(by=[COL_CASE_CNT, COL_SALE_AMT], ascending=[False, False])\
+                .reset_index(drop=True)
+
+            # Calculate thresholds for top and bottom 1/3
+            n = len(group)
+            top_threshold = n // 3
+            bot_threshold = n - top_threshold
+
+            # Create a new column for rank flag
+            group[COL_RK_FLAG] = ""
+            group.loc[:top_threshold - 1, COL_RK_FLAG] = 'top'  # Top 1/3
+            group.loc[bot_threshold:, COL_RK_FLAG] = 'bot'  # Bottom 1/3
+
+            return group
+
+        # In this dataframe, it is expected to have year sorted (asc), and each seller
+        # is assigned 'top', '', or 'bot' at the rank_flag, given its ranking position
+        # in each year.
+        grouped_new = grouped_new.groupby(COL_YR, group_keys=False)\
+            .apply(assign_rank_flags)\
+            .reset_index(drop=True)
+
+
+        # 3. make the aggregation columns
+        def agg_data(sub_df: pd.DataFrame):
+            '''
+            For each sub_df, group by year and make four columns
+            1. sum of sale_amt; 2. sum of case count; 3. mean of unit price
+            4. the yoy of mean unit price (%)
+            '''
+            # The NaN's in the unit_price would be ignored when getting mean
+            grouped = sub_df.groupby(COL_YR).agg(
+                SALE_AMOUNT=(COL_SALE_AMT, 'sum'),
+                CASE_CNT=(COL_SELLER, 'count'),
+                UNIT_PRICE=(COL_UNIT_P, 'mean')
+            ).reset_index()
+
+            # Calculate YoY % change for unit price
+            grouped[f'YOY_{COL_UNIT_P}'] = grouped[COL_UNIT_P].pct_change() * 100
+
+            return grouped
+
+        # [Whole county] YEAR, SALE_AMOUNT, CASE_CNT, UNIT_PRICE, YOY_UNIT_PRICE
+        whole_county = agg_data(grouped_new)
+        whole_county.columns = [f'COUNTY_{col}' if col != COL_YR else col for col in whole_county.columns]
+
+        # [Ranking - top 1/3]
+        top_ranking = agg_data(grouped_new[grouped_new[COL_RK_FLAG] == 'top'])
+        top_ranking.columns = [f'TOP_{col}' if col != COL_YR else col for col in top_ranking.columns]
+
+        # [Ranking - bot 1/3]
+        bot_ranking = agg_data(grouped_new[grouped_new[COL_RK_FLAG] == 'bot'])
+        bot_ranking.columns = [f'BOT_{col}' if col != COL_YR else col for col in bot_ranking.columns]
+
+
+        # ===============
+        #  Out dataframe
+        # ===============
+        # 1. create the base, TODO: how to include Q into the out_df base?
+        # (opt.) join with fips2county to get state abbrv and county name
+        # (opt.) use state abbrv to get region (not yet get the data)
+        years = sorted(set(df[COL_YR]))
+
+        out_df = pd.DataFrame({
+            'FIPS': [cur_fips] * len(years),
+            COL_YR: years
+        })
+
+        for cur_df in [whole_county, top_ranking, bot_ranking, grouped_resale]:
+            out_df = out_df.merge(cur_df, on=COL_YR, how='left')
+
+        out_df['TOP_P_DIFF'] = out_df['TOP_UNIT_PRICE'] - out_df['COUNTY_UNIT_PRICE']
+        out_df['BOT_P_DIFF'] = out_df['BOT_UNIT_PRICE'] - out_df['COUNTY_UNIT_PRICE']
+
+        return out_df
+
+    def corelogic_data_prep(self, folder_path, out_fname = 'corelogic_panel.csv'):
+        '''
+        This function will loop through every fips file in the folder and collect
+        needed info one by one, finally aggregate them and save for later analysis.
+        '''
+        # ================
+        #  Basic Cleaning
+        # ================
+        # here list all available columns and commented out the unused ones.
+        types_spec = {
+            # "FIPS": 'category',
+            # "APN_UNFORMATTED": 'str',
+            # "BATCH-ID": 'str', # in the form of yyyymmdd, but not the same as sale date
+            # "BATCH-SEQ": 'str',
+            "SELLER_NAME1": 'str',
+            "SALE_DATE": 'str',
+            "SALE_AMOUNT": 'str',
+            # "LAND_USE": 'category',
+            "PROPERTY_INDICATOR": 'category',
+            "RESALE/NEW_CONSTRUCTION": 'category', # M: re-sale, N: new construction
+            # "BUYER_NAME_1": 'str',
+            # "LAND_SQUARE_FOOTAGE": 'str',
+            "UNIVERSAL_BUILDING_SQUARE_FEET": 'str',
+            # "BUILDING_SQUARE_FEET_INDICATOR_CODE": 'category', # A: adjusted; B: building; G: gross; H: heated; L: living; M: main; R: ground floor
+            # "BUILDING_SQUARE_FEET": 'str', # doesn't differentiate living and non-living (if lack indicator code)
+            # "LIVING_SQUARE_FEET": 'str',
+        }
+
+        to_cat = []
+        # loop through the folder
+        for fname in tqdm(os.listdir(folder_path), desc=f"Processing FIPS files"):
+            if not fname.endswith(CSV_EXT): continue
+
+            fips = fname.replace(CSV_EXT, "")
+
+            # Rows will be each year, columns include:
+            #   FIPS, YEAR, COUNTY_{SALE_AMOUNT, CASE_CNT, UNIT_PRICE, YOY_UNIT_PRICE},
+            #   TOP_{SALE_AMOUNT, CASE_CNT, UNIT_PRICE, YOY_UNIT_PRICE},
+            #   BOT_{SALE_AMOUNT, CASE_CNT, UNIT_PRICE, YOY_UNIT_PRICE},
+            #   RESALE_SALE_AMOUNT, RESALE_CASE_ENT, TOP_P_DIFF, BOT_P_DIFF
+            cur_df = self.__county_file_clean(cur_fips=fips, types_spec=types_spec)
+
+            if cur_df.empty: continue
+
+            to_cat.append(cur_df)
+
+        panel_df = pd.concat(to_cat, ignore_index=True)
+
+        panel_df.to_csv(f"{self.__out_path}{out_fname}", index=False)
+
+        return
 
     def __archive_deed_prep(self, is_yearly=True, gen_data=False, period=[], scale=""):
         '''
@@ -652,6 +974,36 @@ class Analysis():
 
         return
 
+    def plot_county_price_chg_based_scatter(self):
+        '''
+        The county-level price change is the average unit price in each county, set as x-axis.
+        On the y-axis, there are two options:
+          1. Quantity sold
+          2. Mean unit price difference between [top or bottom groups] and county
+
+        Each year, each county would contribute two dots,
+        one for top 1/3 as solid dot, the other for bottom 1/3 as hollow dot
+
+        (opt.) Maybe different region (North, West...) with different color.
+
+        Parameters
+        ----------
+        filename or dataframe
+            The stacked and cleaned county yearly panel data.
+
+        Return
+        ------
+            None.
+        '''
+
+        # (opt.) get the state abbrv and region as a new column for different coloring
+
+        # drop if the COUNTY_CASE_CNT is less than 20 (notice this is for each year)
+
+        # 1. Quantity as y-axis
+
+        # 2. Price diff as y-axis
+
     def make_hhi_panel(self, filename, gen_data=False):
         '''
         The data is generated by this: deed_prep(is_yearly=True, gen_data=True)
@@ -722,54 +1074,15 @@ class Analysis():
 
 
 def main():
-    client = Client(n_workers=1, threads_per_worker=6, memory_limit='10GB')
+    a = Analysis(out_path=STACKED_PATH)
 
-    a = Analysis()
-
-    # ================
-    #  Basic Cleaning
-    # ================
-    types_spec = {
-        "FIPS": 'category',
-        "APN_UNFORMATTED": 'str',
-        "BATCH-ID": 'str', # in the form of yyyymmdd, but not the same as sale date
-        "BATCH-SEQ": 'str',
-        "SELLER_NAME1": 'str',
-        "SALE_DATE": 'str',
-        "SALE_AMOUNT": 'str',
-        "LAND_USE": 'category',
-        "PROPERTY_INDICATOR": 'category',
-        "RESALE/NEW_CONSTRUCTION": 'category', # M: re-sale, N: new construction
-        "BUYER_NAME_1": 'str',
-        "LAND_SQUARE_FOOTAGE": 'str',
-        "UNIVERSAL_BUILDING_SQUARE_FEET": 'str',
-        "BUILDING_SQUARE_FEET_INDICATOR_CODE": 'category', # A: adjusted; B: building; G: gross; H: heated; L: living; M: main; R: ground floor
-        "BUILDING_SQUARE_FEET": 'str', # doesn't differentiate living and non-living (if lack indicator code)
-        "LIVING_SQUARE_FEET": 'str',
-    }
-
-    ddf = dd.read_csv(
-        STACKED_PATH+"merged_stacked.csv",
-        blocksize='300MB',
-        usecols=list(types_spec.keys()), # need to be subscriptable (use [0] to access elms)
-        dtype=types_spec
-    )
-
-    to_num = [
-        "SALE_AMOUNT", "LAND_SQUARE_FOOTAGE", "UNIVERSAL_BUILDING_SQUARE_FEET",
-        "BUILDING_SQUARE_FEET", "LIVING_SQUARE_FEET"
-    ]
-
-    for col in to_num:
-        # if not number, turn to NaN
-        ddf[col] = dd.to_numeric(ddf[col], errors='coerce')
+    a.corelogic_data_prep(COUNTY_FILE_PATH)
+    # a.plot_county_price_chg_based_scatter(filename)
 
     # =====================================
     #  Generates the HHI data for plotting
     # =====================================
-    a.data_prep(data=ddf)
-
-    client.close()
+    # a.data_prep()
 
     # ==========
     #  Plotting
