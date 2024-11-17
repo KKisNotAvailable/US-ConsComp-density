@@ -45,6 +45,7 @@ https://www.census.gov/topics/housing.html
   4. [DONE] vacancy rate
      https://www.census.gov/housing/hvs/data/prevann.html
      裡面有homeowner vac, gross vac, year-round vac (4~5a), def見第一PDF
+     >> Table 5a.
   5. [???] median number of days property listings spend on the market (類似周轉率)
      https://www.realtor.com/research/data/ => monthly inventory => county, historical data (2016.07-)
   6. [need_scrap] median household income (to measure affordability)
@@ -56,6 +57,7 @@ https://www.census.gov/topics/housing.html
      >> state (06): https://data.bls.gov/dataViewer/view/timeseries/LASST060000000000003
   8. [???] 一些供給面的 (eg. construction cost, Wharton Residential Land Use Regulation Index, and land availability index?)
      >> construction: https://fred.stlouisfed.org/tags/series?t=construction%3Bprice+index => [WhichToUse?]
+      => does transportation for construction index ?? exist?
      >> WRLURI: https://real-faculty.wharton.upenn.edu/gyourko/land-use-survey/ (2006 & 2018)
   9. [DONE] weather condition (有無自然災害影響 => should be some yearly binary code per county?)
      >> https://www.fema.gov/data-visualization/disaster-declarations-states-and-counties
@@ -68,3 +70,10 @@ https://www.census.gov/topics/housing.html
 (幾乎都是好壞時期的比較)
 1. properties sold during good/bad time for small and large companies
 2. properties built ...
+
+
+Q會分大小，price看整個county，不分年份
+
+用有合到compustat的前後1/3，
+
+** No need to use compustat for now...
