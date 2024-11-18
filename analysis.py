@@ -64,16 +64,11 @@ GEO COLUMNS:
 '''
 
 class Analysis():
-    def __init__(self, out_path: str, hhi_base='sale_amt') -> None:
+    def __init__(self, out_path: str) -> None:
         self.__out_path = out_path
-        self.hhi_base = hhi_base
         self.threshold = 20
         self.sizex = 16
         self.sizey = 12
-
-        if not hhi_base in ['sale_amt', 'case_cnt']:
-            print("Please provide a valid HHI base, either 'sale_amt' or 'case_cnt'")
-            # maybe trigger some error here, just find a way to terminate the code.
 
         if not os.path.isdir(out_path):
             os.mkdir(out_path)
@@ -373,6 +368,7 @@ class Analysis():
         # df[COL_QTR] = (pd.to_numeric(df['SALE_DATE'].str[4:6]) - 1) // 3 + 1  # int
 
         # 3. calculate unit price
+        df[COL_SALE_AMT] = df[COL_SALE_AMT] // 100 # the original data shows extra two 0s in the back.
         df[COL_UNIT_P] = df[COL_SALE_AMT] / df[COL_BLDG_AREA]
 
         # 4. process the seller names
@@ -389,7 +385,7 @@ class Analysis():
             RESALE_CASE_CNT=(COL_SELLER, 'count')
         ).reset_index()
 
-        no_new_out_df = grouped_resale
+        no_new_out_df = grouped_resale.copy()
         no_new_out_df['FIPS'] = cur_fips
 
 
@@ -425,7 +421,6 @@ class Analysis():
             .sort_values(by=[COL_YR, COL_CASE_CNT], ascending=[True, False])\
             .reset_index(drop=True)
 
-
         # 2. make ranking flag column
         def assign_rank_flags(group: pd.DataFrame):
             # Sort sellers by case_cnt and sale_amt in descending order
@@ -433,15 +428,15 @@ class Analysis():
                 .sort_values(by=[COL_CASE_CNT, COL_SALE_AMT], ascending=[False, False])\
                 .reset_index(drop=True)
 
-            # Calculate thresholds for top and bottom 1/3
-            n = len(group)
-            top_threshold = n // 3
+            # Calculate thresholds for top and bottom x%
+            n, x_pct = len(group), 0.2
+            top_threshold = int(n * x_pct)
             bot_threshold = n - top_threshold
 
             # Create a new column for rank flag
             group[COL_RK_FLAG] = ""
-            group.loc[:top_threshold - 1, COL_RK_FLAG] = 'top'  # Top 1/3
-            group.loc[bot_threshold:, COL_RK_FLAG] = 'bot'  # Bottom 1/3
+            group.loc[:top_threshold - 1, COL_RK_FLAG] = 'top'  # Top x%
+            group.loc[bot_threshold:, COL_RK_FLAG] = 'bot'  # Bottom x%
 
             return group
 
@@ -451,7 +446,6 @@ class Analysis():
         grouped_new = grouped_new.groupby(COL_YR, group_keys=False)\
             .apply(assign_rank_flags)\
             .reset_index(drop=True)
-
 
         # 3. make the aggregation columns
         def agg_data(sub_df: pd.DataFrame):
@@ -463,12 +457,12 @@ class Analysis():
             # The NaN's in the unit_price would be ignored when getting mean
             grouped = sub_df.groupby(COL_YR).agg(
                 SALE_AMOUNT=(COL_SALE_AMT, 'sum'),
-                CASE_CNT=(COL_SELLER, 'count'),
+                CASE_CNT=(COL_CASE_CNT, 'sum'),
                 UNIT_PRICE=(COL_UNIT_P, 'mean')
             ).reset_index()
 
             # Calculate YoY % change for unit price
-            grouped[f'YOY_{COL_UNIT_P}'] = grouped[COL_UNIT_P].pct_change() * 100
+            # grouped[f'YOY_{COL_UNIT_P}'] = grouped[COL_UNIT_P].pct_change() * 100
 
             return grouped
 
@@ -484,6 +478,11 @@ class Analysis():
         bot_ranking = agg_data(grouped_new[grouped_new[COL_RK_FLAG] == 'bot'])
         bot_ranking.columns = [f'BOT_{col}' if col != COL_YR else col for col in bot_ranking.columns]
 
+        # HHI = sum((x_i/X)^2), notice the base is top 50; YEAR, HHI
+        TOP_N = 50
+        hhi_per_year = grouped_new.groupby(COL_YR)[COL_SALE_AMT].apply(
+            lambda grp: sum((grp.nlargest(TOP_N) / grp.nlargest(TOP_N).sum()) ** 2)
+        ).rename('HHI').reset_index()
 
         # ===============
         #  Out dataframe
@@ -498,8 +497,12 @@ class Analysis():
             COL_YR: years
         })
 
-        for cur_df in [whole_county, top_ranking, bot_ranking, grouped_resale]:
+        for cur_df in [whole_county, top_ranking, bot_ranking, grouped_resale, hhi_per_year]:
             out_df = out_df.merge(cur_df, on=COL_YR, how='left')
+
+        # make yoy after ensuring all years are present
+        for lvl in ['COUNTY', 'TOP', 'BOT']:
+            out_df[f'{lvl}_YOY_{COL_UNIT_P}'] = out_df[f'{lvl}_{COL_UNIT_P}'].pct_change() * 100
 
         out_df['TOP_P_DIFF'] = out_df['TOP_UNIT_PRICE'] - out_df['COUNTY_UNIT_PRICE']
         out_df['BOT_P_DIFF'] = out_df['BOT_UNIT_PRICE'] - out_df['COUNTY_UNIT_PRICE']
@@ -714,7 +717,7 @@ class Analysis():
             return grouped_results['FIPS'] if scale == 'counties' else grouped_results['STATEFP']
         return
 
-    def deed_plot_heat_map(self, filename, scale='states', save_fig=False):
+    def __archive_deed_plot_heat_map(self, filename, scale='states', save_fig=False):
         '''
         REF: https://dev.to/oscarleo/how-to-create-data-maps-of-the-united-states-with-matplotlib-p9i
         plot the non yearly result on maps
@@ -747,7 +750,7 @@ class Analysis():
         f = self.__out_path + filename # TODO: should change the way of writing this
         HHI = pd.read_csv(f) # or maybe we can combine the scale indicator with the filename
 
-        cur_hhi = 'HHI_sale_amt' if self.hhi_base == 'sale_amt' else 'HHI_case_cnt'
+        cur_hhi = 'HHI_sale_amt'
         cur_scale = 'STUSPS' if scale == 'states' else 'FIPS'
         scale_new_name = 'STUSPS' if scale == 'states' else 'GEOID'
 
@@ -822,7 +825,7 @@ class Analysis():
             plt.show()
         return
 
-    def deed_plot_time_series(self, filename, save_fig=False):
+    def __archive_deed_plot_time_series(self, filename, save_fig=False):
         '''
         This function only considers plotting for all the states,
         since including all the counties in one plot would be chaos.
@@ -836,7 +839,7 @@ class Analysis():
         cur_tresh = self.threshold
         df = df[df['year'] >= 1987] # since 1987 差不多HHI趨於穩定，也是FRED資料庫S&P CoreLogic Case-Shiller U.S. National Home Price Index 的起始點
         df = df[df['case_cnt'] >= cur_tresh] # 把一些量太少的年份/row踢掉
-        cur_hhi = 'HHI_sale_amt' if self.hhi_base == 'sale_amt' else 'HHI_case_cnt'
+        cur_hhi = 'HHI_sale_amt'
 
         # Define the full range of years expected in the data
         full_years = np.arange(df['year'].min(), df['year'].max() + 1)
@@ -870,7 +873,7 @@ class Analysis():
             plt.show()
         return
 
-    def deed_plot_scatter(self, period, filename, cur_index="HHI", filter_outlier=False, save_fig=False):
+    def __archive_deed_plot_scatter(self, period, filename, cur_index="HHI", filter_outlier=False, save_fig=False):
         '''
         This function plots the scatter plot of HHI, with x-axis being the
         county-level HHI and the y-axis being the house price change.
@@ -892,7 +895,7 @@ class Analysis():
         # us_hpi = pd.read_csv("data/USSTHPI.csv")
 
         s, e = min(period), max(period)
-        hhi_col = f'HHI_{self.hhi_base}'
+        hhi_col = 'HHI_sale_amt'
         if 'FIPS' in filename:
             cur_scale = 'counties'
             cur_scale_col = 'FIPS'
@@ -974,7 +977,7 @@ class Analysis():
 
         return
 
-    def plot_county_price_chg_based_scatter(self):
+    def plot_county_price_chg_based_scatter(self, panel_fname):
         '''
         The county-level price change is the average unit price in each county, set as x-axis.
         On the y-axis, there are two options:
@@ -995,16 +998,133 @@ class Analysis():
         ------
             None.
         '''
+        type_spec = {
+            'FIPS': 'str'
+        }
+        panel_df = pd.read_csv(self.__out_path+panel_fname, dtype=type_spec)
+
+        # ================
+        #  Basic Checking
+        # ================
+        # print(panel_df['TOP_CASE_CNT'].max(skipna=True))
+        # idx = panel_df['COUNTY_YOY_UNIT_PRICE'].idxmax()
+        # print(panel_df.loc[idx, :])
+
+        # ======
+        #  Prep
+        # ======
+        # make 'IS_CONSEC' column to avoid false YOY
+        def check_consecutive(group):
+            # Check if current and previous years both have non-null values
+            is_consec = group['COUNTY_UNIT_PRICE'].notna() & group['COUNTY_UNIT_PRICE'].shift(1).notna()
+            return is_consec.replace({True: 'Y', False: None})
+
+        # Apply the function for each FIPS group
+        panel_df['IS_CONSEC'] = panel_df.groupby('FIPS', group_keys=False).apply(check_consecutive)
 
         # (opt.) get the state abbrv and region as a new column for different coloring
 
-        # drop if the COUNTY_CASE_CNT is less than 20 (notice this is for each year)
+        # drop if the COUNTY_CASE_CNT is less than threshold (notice this is for each year)
+        threshold = 50
+        plot_base = panel_df[panel_df['COUNTY_CASE_CNT'] >= threshold]
 
+        # drop if COUNTY_YOY_UNIT_PRICE is NaN and not consecutive year
+        exclude_na = ['COUNTY_YOY_UNIT_PRICE', 'TOP_UNIT_PRICE', 'BOT_UNIT_PRICE']
+        plot_base = plot_base.dropna(subset=exclude_na)
+        plot_base = plot_base[plot_base['COUNTY_YOY_UNIT_PRICE'].abs() <= 50]
+        plot_base = plot_base[plot_base['IS_CONSEC'] == 'Y']
+
+        # ================
+        #  Extra Checking
+        # ================
+        # idx = plot_base['TOP_CASE_CNT'].idxmax()
+        # print(plot_base.loc[idx, :])
+        # print(plot_base.loc[plot_base['TOP_CASE_CNT'] >= 25000, ['FIPS', 'YEAR']])
+
+        # ==========
+        #  Plotting
+        # ==========
         # 1. Quantity as y-axis
+        plot_1_data = plot_base.dropna(subset=['TOP_CASE_CNT', 'BOT_CASE_CNT'])
+        plot_1_data = plot_1_data[['COUNTY_YOY_UNIT_PRICE','TOP_CASE_CNT', 'BOT_CASE_CNT']]
+
+        plot_1_data = plot_1_data[plot_1_data['TOP_CASE_CNT'] <= 10000]
+
+        fig, ax1 = plt.subplots(figsize=(8, 6))
+
+        # Solid points for TOP
+        ax1.scatter(
+            plot_1_data['COUNTY_YOY_UNIT_PRICE'],
+            plot_1_data['TOP_CASE_CNT'],
+            label='TOP 33%',
+            color='black',
+            s=100,
+            alpha=0.8
+        )
+
+        # Hollow points for BOT
+        ax1.scatter(
+            plot_1_data['COUNTY_YOY_UNIT_PRICE'],
+            plot_1_data['BOT_CASE_CNT'],
+            label='BOT 33%',
+            edgecolors='Red',
+            facecolors='none',
+            s=100,
+            alpha=0.8
+        )
+
+        ax1.set_xlabel('County Avg. Price Change', fontsize=12)
+        ax1.set_ylabel('Quantity Sold', fontsize=12)
+        # ax1.set_title('Scatter Plot with Solid and Hollow Points', fontsize=14)
+        ax1.legend()
+        ax1.grid(True)
+
+        # Show the plot
+        plt.show()
 
         # 2. Price diff as y-axis
+        # plot_2_data = plot_base.dropna(subset=['TOP_P_DIFF', 'BOT_P_DIFF'])
+        # plot_2_data = plot_2_data[['COUNTY_YOY_UNIT_PRICE','TOP_P_DIFF', 'BOT_P_DIFF']]
 
-    def make_hhi_panel(self, filename, gen_data=False):
+        # # drop if top are negative
+        # cond = (plot_2_data['TOP_P_DIFF'] >= 0) & (plot_2_data['TOP_P_DIFF'] < 25000)
+        # plot_2_data = plot_2_data[cond]
+
+        # # print(plot_2_data.describe())
+
+        # fig, ax2 = plt.subplots(figsize=(8, 6))
+
+        # # Solid points for TOP
+        # ax2.scatter(
+        #     plot_2_data['COUNTY_YOY_UNIT_PRICE'],
+        #     plot_2_data['TOP_P_DIFF'],
+        #     label='TOP 33%',
+        #     color='black',
+        #     s=50,
+        #     alpha=0.8
+        # )
+
+        # # Hollow points for BOT
+        # ax2.scatter(
+        #     plot_2_data['COUNTY_YOY_UNIT_PRICE'],
+        #     plot_2_data['BOT_P_DIFF'],
+        #     label='BOT 33%',
+        #     edgecolors='Red',
+        #     facecolors='none',
+        #     s=50,
+        #     alpha=0.8
+        # )
+
+        # ax2.set_xlabel('County Avg. Price Change (%)', fontsize=12)
+        # ax2.set_ylabel('Price Diff', fontsize=12)
+        # # ax2.set_title('Scatter Plot with Solid and Hollow Points', fontsize=14)
+        # ax2.legend()
+        # ax2.grid(True)
+
+        # # Show the plot
+        # plt.show()
+
+    def __archive_make_hhi_panel(self, filename, gen_data=False):
         '''
         The data is generated by this: deed_prep(is_yearly=True, gen_data=True)
         '''
@@ -1030,7 +1150,7 @@ class Analysis():
 
         # 1. do operations for all rows: take reciprocal of HHI & avg. price
         df['avg_price'] = df['sale_amt'] / df['case_cnt']
-        df['HHI'] = df[f'HHI_{self.hhi_base}']
+        df['HHI'] = df['HHI_sale_amt']
         df['ENI'] = 1 / df['HHI']
 
         # 2. filter the counties/states out (year already sorted in the csv file)
@@ -1061,7 +1181,7 @@ class Analysis():
         else:
             print(df)
 
-    def file_out(self, df, filename: str) -> None:
+    def __archive_file_out(self, df, filename: str) -> None:
         # TODO: filename validity check
         # TODO: kwargs for to_csv
 
@@ -1076,8 +1196,8 @@ class Analysis():
 def main():
     a = Analysis(out_path=STACKED_PATH)
 
-    a.corelogic_data_prep(COUNTY_FILE_PATH)
-    # a.plot_county_price_chg_based_scatter(filename)
+    # a.corelogic_data_prep(COUNTY_FILE_PATH)
+    a.plot_county_price_chg_based_scatter("corelogic_panel.csv")
 
     # =====================================
     #  Generates the HHI data for plotting
@@ -1093,11 +1213,11 @@ def main():
         'counties': 'agg_result_FIPS.csv'
     }
     # for s, file in tb_list.items():
-    #     a.deed_plot_heat_map(file, save_fig=True, hhi_base='sale_amt', scale=s)
+    #     a.deed_plot_heat_map(file, save_fig=True, scale=s)
 
     # 2. draw time series of states from 1987
     file = 'yearly_agg_result_STATEFP.csv'
-    # a.deed_plot_time_series(file, hhi_base='sale_amt', save_fig=True)
+    # a.deed_plot_time_series(file, save_fig=True)
 
     # 3. scatter plot of HHI (x-axis) and price change (y-axis)
     # change rate from 2006 to 2012 and 2012 to 2020
