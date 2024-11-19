@@ -34,7 +34,7 @@ https://www.census.gov/topics/housing.html
      >> 2000-2009: 2000-2009/counties/totals/co-est2009-alldata.csv
      >> 2010-2019: 2010-2019/counties/totals/co-est2019-alldata.csv
      >> 2020-2023: 2020-2023/counties/totals/co-est2023-alldata.csv
-  2. [DONE] number / dollar amount of properties sold (both first and second hand)
+  2. [CORELOGIC] number / dollar amount of properties sold (both first and second hand)
      not down to even state level: https://www.census.gov/construction/nrs/data/series.html
      >> will use data directly from CoreLogic
   3. [DONE] housing stock
@@ -42,24 +42,24 @@ https://www.census.gov/topics/housing.html
      >> 2000-2009: 2000-2009/housing/totals/hu-est2009-us.csv
      >> 2010-2020: 2010-2020/housing/HU-EST2020_ALL.csv
      >> 2020-2023: 中間一堆state的地方按第一個 United States: CO-EST2023-HU.xlsx
-  4. [DONE] vacancy rate
+  4. [CLEANING] vacancy rate
      https://www.census.gov/housing/hvs/data/prevann.html
      裡面有homeowner vac, gross vac, year-round vac (4~5a), def見第一PDF
      >> Table 5a.
   5. [???] median number of days property listings spend on the market (類似周轉率)
      https://www.realtor.com/research/data/ => monthly inventory => county, historical data (2016.07-)
-  6. [need_scrap] median household income (to measure affordability)
+  6. [DONE] median household income (to measure affordability)
      https://fred.stlouisfed.org/searchresults?st=county+level+median+household+income
      >> county (06037): https://fred.stlouisfed.org/series/MHICA06037A052NCEN
-  7. [need_scrap] employment rate
+  7. [CLEANING] employment rate
      https://www.bls.gov/lau/data.htm
      >> county (48039): https://data.bls.gov/dataViewer/view/timeseries/LAUCN480390000000004
      >> state (06): https://data.bls.gov/dataViewer/view/timeseries/LASST060000000000003
   8. [???] 一些供給面的 (eg. construction cost, Wharton Residential Land Use Regulation Index, and land availability index?)
-     >> construction: https://fred.stlouisfed.org/tags/series?t=construction%3Bprice+index => [WhichToUse?]
+     >> construction: https://fred.stlouisfed.org/tags/series?t=construction%3Bprice+index => [NotThis]
       => does transportation for construction index ?? exist?
      >> WRLURI: https://real-faculty.wharton.upenn.edu/gyourko/land-use-survey/ (2006 & 2018)
-  9. [DONE] weather condition (有無自然災害影響 => should be some yearly binary code per county?)
+  9. [CLEANING] weather condition (有無自然災害影響 => should be some yearly binary code per county?)
      >> https://www.fema.gov/data-visualization/disaster-declarations-states-and-counties
 > construction company characteristics (from compustat)
 
