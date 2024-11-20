@@ -17,6 +17,7 @@ warnings.filterwarnings("ignore")
 CUR_SYS  = platform.system()
 
 EXT_DISK = "F:/" if CUR_SYS == 'Windows' else '/Volumes/KINGSTON/'
+VAR_PATH = EXT_DISK + "Homebuilder/Variables/"
 EXT_DISK += "Homebuilder/2016_files/"
 COUNTY_FILE_PATH = EXT_DISK + "cleaned_by_county/"
 STACKED_PATH = EXT_DISK + "processed_data/"
@@ -49,9 +50,6 @@ COL_RK_FLAG = 'RANK_FLAG'
 COL_BLDG_AREA = 'UNIVERSAL_BUILDING_SQUARE_FEET'
 
 '''NOTES
-(don't need now..., the first column 'FIPS' is actually the counties)
-source of US cities list (Basic ver.): https://simplemaps.com/data/us-cities
-
 DEED COLUMNS:
         ['FIPS', 'PCL_ID_IRIS_FRMTD', 'BLOCK LEVEL LATITUDE',
        'BLOCK LEVEL LONGITUDE', 'SITUS_CITY', 'SITUS_STATE', 'SITUS_ZIP_CODE',
@@ -64,6 +62,8 @@ GEO COLUMNS:
        states: ['STATEFP', 'STATENS', 'AFFGEOID', 'GEOID', 'STUSPS', 'NAME', 'LSAD',
        'ALAND', 'AWATER', 'geometry']
 '''
+
+# TODO: write replication documentation? I'm currently having too many code.
 
 class Analysis():
     def __init__(self, out_path: str) -> None:
@@ -333,6 +333,157 @@ class Analysis():
 
         return data
 
+    def __county_seller_file_clean(self, cur_fips, types_spec: dict):
+        '''
+        This is for generating data for Prof. to test plots. Therefore, this will
+        aggregate to county-seller level, rather than county level.
+        '''
+        # the county file could include no new construction or even no data at all
+        df = pd.read_csv(
+            f"{COUNTY_FILE_PATH}{cur_fips}.csv",
+            usecols=types_spec.keys(),
+            dtype=types_spec
+        )
+        # in the loop calling this function, returned empty will be ignored.
+        if df.empty: return df
+
+        to_num = [
+            "SALE_AMOUNT", "LAND_SQUARE_FOOTAGE", "UNIVERSAL_BUILDING_SQUARE_FEET",
+            "BUILDING_SQUARE_FEET", "LIVING_SQUARE_FEET"
+        ]
+        for col in to_num:
+            if col in types_spec.keys():
+                # if not number, turn to NaN
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+
+
+        # ====================
+        #  General preprocess
+        # ====================
+        # 0. Include only the sellers of new construction.
+        df = df[df[COL_RESALE_NEW] == 'N']
+
+        if df.empty: return df  # some counties might include no new const.
+
+        # 1. PROPERTY_INDICATOR: keep single family (10), condo (11), vacant (80),
+        #                        duplex & tri... (21), apartment (22), misc (00)
+        #    => since we've already filtered with land_use for broadly speaking residential use,
+        #       we'll keep vacant and miscellaneous here.
+        keep_list = ['10', '11', '80', '21', '22', '00']
+        df = df[df['PROPERTY_INDICATOR'].isin(keep_list)]
+
+        # 2. make year and quarter from SALE_DATE (str, eg. 20101231), drop those not numeric
+        df = df[df['SALE_DATE'].str.isnumeric()].reset_index(drop=True)
+        df[COL_YR] = df['SALE_DATE'].str[:4]  # still string
+        # (month-1) // 3 + 1 = Q
+        # df[COL_QTR] = (pd.to_numeric(df['SALE_DATE'].str[4:6]) - 1) // 3 + 1  # int
+
+        # 3. calculate unit price
+        df[COL_SALE_AMT] = df[COL_SALE_AMT] // 100 # the original data shows extra two 0s in the back.
+        df[COL_UNIT_P] = df[COL_SALE_AMT] / df[COL_BLDG_AREA]
+
+        # 4. process the seller names
+        df = self.__clean_firm_names(df)
+
+        # ===================
+        #  Start aggregation
+        # ===================
+        key_set = [COL_YR, COL_SELLER]
+
+        # 1. group by year and seller (discard OWNER RECORD), get
+        #    (1) sum of sale_amt (2) count occurance => case_cnt (3) mean of unit price
+        #    and sort by year (asc), case count (desc)
+        grouped_new = df.groupby(key_set).agg(
+            SALE_AMOUNT=(COL_SALE_AMT, 'sum'),
+            CASE_CNT=(COL_SELLER, 'count')
+        ).reset_index()
+
+        # some records have empty building area, ignore them when getting avg
+        df_unit_price = df[df[COL_BLDG_AREA] != 0]
+
+        gped_new_unit_p = df_unit_price.groupby(key_set).agg(
+            MEAN_UNIT_PRICE=(COL_UNIT_P, 'mean'),
+            MEDIAN_UNIT_PRICE=(COL_UNIT_P, 'median')
+        ).reset_index()
+
+        grouped_new = grouped_new.merge(gped_new_unit_p, on=key_set, how='left')
+
+        # Sort by year (ascending) and case_cnt (descending)
+        grouped_new = grouped_new\
+            .sort_values(by=[COL_YR, COL_CASE_CNT], ascending=[True, False])\
+            .reset_index(drop=True)
+
+        # 2. make ranking flag column
+        def assign_rank_flags(group: pd.DataFrame):
+            # Sort sellers by case_cnt and sale_amt in descending order
+            group = group\
+                .sort_values(by=[COL_CASE_CNT, COL_SALE_AMT], ascending=[False, False])\
+                .reset_index(drop=True)
+
+            # Calculate thresholds for top and bottom x%
+            n, x_pct = len(group), 0.33
+            top_threshold = int(n * x_pct)
+            bot_threshold = n - top_threshold
+
+            # Create a new column for rank flag
+            group[COL_RK_FLAG] = ""
+            group.loc[:top_threshold - 1, COL_RK_FLAG] = 'top'  # Top x%
+            group.loc[bot_threshold:, COL_RK_FLAG] = 'bot'  # Bottom x%
+
+            return group
+
+        # In this dataframe, it is expected to have year sorted (asc), and each seller
+        # is assigned 'top', '', or 'bot' at the rank_flag, given its ranking position
+        # in each year.
+        grouped_new = grouped_new.groupby(COL_YR, group_keys=False)\
+            .apply(assign_rank_flags)\
+            .reset_index(drop=True)
+
+        tmp_cols = grouped_new.columns
+        grouped_new['FIPS'] = cur_fips
+
+        grouped_new = grouped_new[['FIPS'] + list(tmp_cols)]
+
+        return grouped_new
+
+    def corelogic_seller_data_prep(self, folder_path, out_fname='corelogic_seller_panel.csv'):
+        '''
+        This is for generating data for Prof. to test plots. Therefore, this will
+        aggregate to county-seller level, rather than county level.
+        '''
+        # here list all available columns and commented out the unused ones.
+        types_spec = {
+            "SELLER_NAME1": 'str',
+            "SALE_DATE": 'str',
+            "SALE_AMOUNT": 'str',
+            "PROPERTY_INDICATOR": 'category',
+            "RESALE/NEW_CONSTRUCTION": 'category', # M: re-sale, N: new construction
+            "UNIVERSAL_BUILDING_SQUARE_FEET": 'str'
+        }
+
+        to_cat = []
+        # loop through the folder
+        for fname in tqdm(os.listdir(folder_path), desc=f"Processing FIPS files"):
+            if not fname.endswith(CSV_EXT): continue
+
+            fips = fname.replace(CSV_EXT, "")
+
+            # Rows will be each year, columns include:
+            #   FIPS, YEAR,
+            cur_df = self.__county_seller_file_clean(cur_fips=fips, types_spec=types_spec)
+
+            # print(cur_df)
+            # return
+            if cur_df.empty: continue
+
+            to_cat.append(cur_df)
+
+        panel_df = pd.concat(to_cat, ignore_index=True)
+
+        panel_df.to_csv(f"{self.__out_path}{out_fname}", index=False)
+
+        return
+
     def __county_file_clean(self, cur_fips, types_spec: dict):
         # the county file could include no new construction or even no data at all
         df = pd.read_csv(
@@ -514,7 +665,7 @@ class Analysis():
 
         return out_df
 
-    def corelogic_data_prep(self, folder_path, out_fname = 'corelogic_panel.csv'):
+    def corelogic_data_prep(self, folder_path, out_fname='corelogic_panel.csv'):
         '''
         This function will loop through every fips file in the folder and collect
         needed info one by one, finally aggregate them and save for later analysis.
@@ -1164,6 +1315,61 @@ class Analysis():
         # Show the plot
         plt.show()
 
+    def make_full_panel(self, base_panel, out_fname='homebuilder_panel.csv'):
+        '''
+        Currently don't want to include the feature of adding variables, will
+        default include all.
+
+        Parameters
+        ----------
+        base_panel: str.
+            the corelogic panel.
+        '''
+
+        type_spec = {
+            'FIPS': 'str'
+        }
+        panel_df = pd.read_csv(self.__out_path+base_panel, dtype=type_spec)
+        panel_df = panel_df.rename(columns={"YEAR": 'Year'})
+        panel_df['StateFIPS'] = panel_df['FIPS'].str[:2]
+
+        # >> Vacancy starts from 2005, and is state level: StateFIPS,Year,Vacancy_rate
+        data_va = pd.read_csv(f"{VAR_PATH}vacancy_panel.csv", dtype={"StateFIPS": 'category'})
+        panel_df = panel_df.merge(data_va, on=['StateFIPS', 'Year'], how='left')
+
+        # >> WRLURI only has 2006: PLACEFP,WRLURI,STATE,FIPS
+        wi_data = pd.read_csv(f"{VAR_PATH}WRLURI_2006.csv", dtype={"FIPS": 'category'})
+        wi_data = wi_data[['FIPS', 'WRLURI']]
+        wi_data = wi_data.dropna()
+        # drop rows with duplicates in FIPS, keeping the row with the max value in WRLURI
+        wi_data = wi_data.loc[wi_data.groupby('FIPS', observed=True)['WRLURI'].idxmax()]
+
+        panel_df = panel_df.merge(wi_data, on='FIPS', how='left')
+
+        # >> Unemployment: FIPS,Year,Unemployment
+        unemp_data = pd.read_csv(f"{VAR_PATH}unemployment_panel.csv", dtype={"FIPS": 'category'})
+        panel_df = panel_df.merge(unemp_data, on=['FIPS', 'Year'], how='left')
+
+        # >> Population: FIPS,Year,Population
+        pop_data = pd.read_csv(f"{VAR_PATH}pop_panel.csv", dtype={"FIPS": 'category'})
+        panel_df = panel_df.merge(pop_data, on=['FIPS', 'Year'], how='left')
+
+        # >> Natural disaster: FIPS,start_year,Count
+        nd_data = pd.read_csv(f"{VAR_PATH}natural_disaster_panel.csv", dtype={"FIPS": 'category'})
+        nd_data = nd_data.rename(columns={"start_year": 'Year', "Count": 'disaster_cnt'})
+        panel_df = panel_df.merge(nd_data, on=['FIPS', 'Year'], how='left')
+        panel_df['disaster_cnt'] = panel_df['disaster_cnt'].fillna(0)
+
+        # >> Median hh income: FIPS,Year,Median_HH_income
+        mhhi_data = pd.read_csv(f"{VAR_PATH}med_hh_income_panel.csv", dtype={"FIPS": 'category'})
+        panel_df = panel_df.merge(mhhi_data, on=['FIPS', 'Year'], how='left')
+
+        # >> House stock: FIPS,Year,House_stock
+        hs_data = pd.read_csv(f"{VAR_PATH}house_stock_panel.csv", dtype={"FIPS": 'category'})
+        panel_df = panel_df.merge(hs_data, on=['FIPS', 'Year'], how='left')
+
+        panel_df.to_csv(f"{self.__out_path}{out_fname}", index=False)
+
     def __archive_make_hhi_panel(self, filename, gen_data=False):
         '''
         The data is generated by this: deed_prep(is_yearly=True, gen_data=True)
@@ -1233,11 +1439,31 @@ class Analysis():
         print("DONE")
 
 
+def csv_to_dta(filepath, filename):
+    data = pd.read_csv(f'{filepath}{filename}.csv')
+
+    data.to_stata(f'{filepath}{filename}.dta')
+
+
 def main():
     a = Analysis(out_path=STACKED_PATH)
 
+    # csv_to_dta(STACKED_PATH, 'corelogic_seller_panel')
+
+    # ==============
+    #  Data to prof
+    # ==============
+    # Seller data
+    # a.corelogic_seller_data_prep(COUNTY_FILE_PATH)
+
+    # Get corelogic_panel
     # a.corelogic_data_prep(COUNTY_FILE_PATH)
-    a.plot_county_price_chg_based_scatter("corelogic_panel.csv")
+
+    # Get homebuilder_panel
+    # a.make_full_panel("corelogic_panel_33pct_v3.csv")  # combine corelogic panel with other variables
+
+    # Plot the new series of figure
+    # a.plot_county_price_chg_based_scatter("corelogic_panel.csv")
 
     # =====================================
     #  Generates the HHI data for plotting
