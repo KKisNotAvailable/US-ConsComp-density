@@ -4,6 +4,7 @@ import os
 from tqdm import tqdm
 import re
 import platform
+import time
 from datetime import datetime
 import csv # for csv.QUOTE_NONE, which ignores ' when reading csv
 import warnings
@@ -86,7 +87,7 @@ class Preprocess():
 
             # keep nonempty and valid sale date and then keep only after year 2000
             data = data[data['SALE DATE'].str.isnumeric()]
-            data = data[data['SALE DATE'].str[:4].astype(int) > 2000]
+            data = data[data['SALE DATE'].str[:4].astype(int) >= 2000]
 
             # Remove Non-Arms Length Transactions
             data = data[data['INTER_FAMILY'] != 'Y']
@@ -408,6 +409,7 @@ class Preprocess():
 
 
 def main():
+    start_t = time.time()
     current_date = datetime.now().strftime("%m%d")
     log = f'{current_date}.log'
 
@@ -445,7 +447,9 @@ def main():
     # data = p.stack_files(files=None)
     # p.data_output(data, f'merged_stacked.csv', out_path=EXT_DISK+"processed_data/")
 
-    print("Done")
+    end_t = time.time()
+    time_spent = end_t - start_t
+    print(f"Done!! Time spent: {time_spent:.4f} seconds")
 
 if __name__ == "__main__":
     main()
