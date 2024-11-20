@@ -230,6 +230,7 @@ class VarProcessor():
         out_fname += f'_{ver}.csv'
 
         type_spec_fips = {
+            "STATE": 'category',
             "STATEFP": 'category',
             "COUNTYFP": 'category',
             "PLACEFP": 'str'
@@ -239,7 +240,7 @@ class VarProcessor():
             delimiter='|', usecols=type_spec_fips.keys(), dtype=type_spec_fips
         )
         fips_map['FIPS'] = [s + c for s, c in zip(fips_map['STATEFP'], fips_map['COUNTYFP'])]
-        fips_map = fips_map[['FIPS', 'PLACEFP']]
+        fips_map = fips_map[['FIPS', 'STATE', 'PLACEFP']]
 
         type_spec_2018 = {
             'statecode': 'category',  # might be missing leading 0, need to fix
@@ -249,6 +250,7 @@ class VarProcessor():
 
         type_spec_2006 = {
             'ufips': 'str',  # might be missing leading 0, need to fix
+            'statename': 'category',
             'WRLURI': 'float'
         }
 
@@ -260,10 +262,11 @@ class VarProcessor():
             print("Not a valid version, only 2006 and 2018 available...")
             return
 
-        wi_2006 = wi_2006[['ufips', 'WRLURI']].rename(columns={'ufips': 'PLACEFP'})
+        wi_2006 = wi_2006[['ufips', 'WRLURI', 'statename']]\
+            .rename(columns={"ufips": 'PLACEFP', "statename": 'STATE'})
         wi_2006['PLACEFP'] = wi_2006['PLACEFP'].astype(int).astype(str).str.zfill(5)
 
-        wi_2006 = wi_2006.merge(fips_map, on='PLACEFP', how='left')
+        wi_2006 = wi_2006.merge(fips_map, on=['STATE', 'PLACEFP'], how='left')
 
         if to_file:
             wi_2006.to_csv(EXT_DISK+out_fname, index=False)
@@ -335,7 +338,7 @@ def main():
     # vp.get_vacancy()
     # vp.get_median_hh_income()
     # vp.get_unemployment()
-    # vp.get_wrluri()
+    vp.get_wrluri()
     # vp.get_natural_disaster()  # notice some of the FIPS has 000 in the end, eg. 01000 => might indicate entire state
 
 
