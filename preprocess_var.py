@@ -5,6 +5,7 @@ from tqdm import tqdm
 import re
 import platform
 from datetime import datetime
+import chardet
 import csv # for csv.QUOTE_NONE, which ignores ' when reading csv
 import warnings
 warnings.filterwarnings("ignore")
@@ -50,6 +51,7 @@ class VarProcessor():
 
         if to_file:
             pop_panel.to_csv(EXT_DISK+out_fname, index=False)
+            print("Poulation Done.")
         else:
             print(pop_panel)
 
@@ -106,6 +108,7 @@ class VarProcessor():
 
         if to_file:
             hs_panel.to_csv(EXT_DISK+out_fname, index=False)
+            print("House Stock Done.")
         else:
             print(hs_panel)
 
@@ -151,6 +154,7 @@ class VarProcessor():
 
         if to_file:
             vacant_panel.to_csv(EXT_DISK+out_fname, index=False)
+            print("Vacancy Rate Done.")
         else:
             print(vacant_panel)
 
@@ -180,6 +184,7 @@ class VarProcessor():
 
         if to_file:
             mhhi_panel.to_csv(EXT_DISK+out_fname, index=False)
+            print("Median Household Income Done.")
         else:
             print(mhhi_panel)
 
@@ -197,23 +202,27 @@ class VarProcessor():
                 "Period": 'Month',
                 'Value': 'Unemployment'
             }
-            cur_file = pd.read_csv(f"{folder_path}{fname}", usecols=rename_map.keys())
-            cur_file = cur_file.rename(columns=rename_map)
+            try:
+                cur_file = pd.read_csv(f"{folder_path}{fname}", usecols=rename_map.keys())
+                cur_file = cur_file.rename(columns=rename_map)
 
-            cur_file['FIPS'] = fname[6:11]
+                cur_file['FIPS'] = fname[6:11]
 
-            # take the end of each year as yearly data
-            cur_file = cur_file[cur_file['Month'] == 'M12']
+                # take the end of each year as yearly data
+                cur_file = cur_file[cur_file['Month'] == 'M12']
 
-            # rearrange column order
-            cur_file = cur_file[['FIPS', 'Year', 'Unemployment']]
+                # rearrange column order
+                cur_file = cur_file[['FIPS', 'Year', 'Unemployment']]
 
-            to_cat.append(cur_file)
+                to_cat.append(cur_file)
+            except:
+                print(f'{fname}')
 
         unemp_panel = pd.concat(to_cat, ignore_index=True)
 
         if to_file:
             unemp_panel.to_csv(EXT_DISK+out_fname, index=False)
+            print("Unemployment Done.")
         else:
             print(unemp_panel)
 
@@ -258,34 +267,76 @@ class VarProcessor():
 
         if to_file:
             wi_2006.to_csv(EXT_DISK+out_fname, index=False)
+            print("WRLURI Done.")
         else:
             print(wi_2006)
 
-    def get_natural_disaster():
+    def get_natural_disaster(self, out_fname="natural_disaster_panel.csv", to_file=True):
+        # detect encoding since the file could not open with utf-8 and latin1
+        def detect_encoding():
+            with open(f"{RAW_PATH}Incident_Type_Full_Data.csv", 'rb') as f:
+                raw_data = f.read()
+                result = chardet.detect(raw_data)
+                print(result)
+
         name_spec = {
             'Incident Category': 'incident',
+            # 'Calendar Year of Declaration': 'Year',  # 2024, but not the actual happen year...
             'Incident Begin Date': 'start_date', # 7/24/2024 12:00:00 AM
             'Incident End Date': 'end_date',
             'Fips State Code': 'stateFIPS',
             'Fips County Code': 'countyFIPS'
         }
 
-        cur_file = pd.read_csv(
+        nd_record = pd.read_csv(
             f"{RAW_PATH}Incident_Type_Full_Data.csv",
+            encoding="utf-16", delimiter='\t',
             dtype='str', usecols=name_spec.keys()
         )
+        nd_record = nd_record.rename(columns=name_spec)
+
+        # clean date
+        nd_record['start_date'] = pd.to_datetime(nd_record['start_date'])
+        nd_record['end_date'] = pd.to_datetime(nd_record['end_date'])
+
+        nd_record['start_year'] = nd_record['start_date'].dt.year
+        nd_record['start_month'] = nd_record['start_date'].dt.month
+        nd_record['end_year'] = nd_record['end_date'].dt.year
+        nd_record['end_month'] = nd_record['end_date'].dt.month
+
+        # make FIPS
+        nd_record['stateFIPS'] = nd_record['stateFIPS'].str.zfill(2)
+        nd_record['countyFIPS'] = nd_record['countyFIPS'].str.zfill(3)
+
+        nd_record['FIPS'] = [s + c for s, c in zip(nd_record['stateFIPS'], nd_record['countyFIPS'])]
+
+        nd_record = nd_record[[
+            'FIPS', 'start_year', 'start_month', 'end_year', 'end_month', 'incident'
+        ]]
+
+        nd_record = nd_record.sort_values(
+            by=['FIPS', 'start_year'], ascending=[True, True]).reset_index(drop=True)
+
+        grouped_record = nd_record.groupby(['FIPS', 'start_year']).size().reset_index(name='Count')
+
+        if to_file:
+            grouped_record.to_csv(EXT_DISK+out_fname, index=False)
+            print("Natural Disaster Done.")
+        else:
+            print(grouped_record)
 
 
 
 def main():
     vp = VarProcessor()
 
-    # vp.get_population(to_file=False) # 75426
-    # vp.get_house_stock(to_file=False) # 75400
+    # vp.get_population() # 75426
+    # vp.get_house_stock() # 75400
     # vp.get_vacancy()
     # vp.get_median_hh_income()
     # vp.get_unemployment()
-    vp.get_wrluri()
+    # vp.get_wrluri()
+    # vp.get_natural_disaster()  # notice some of the FIPS has 000 in the end, eg. 01000 => might indicate entire state
 
 
 
