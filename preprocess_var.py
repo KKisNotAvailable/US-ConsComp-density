@@ -13,6 +13,7 @@ warnings.filterwarnings("ignore")
 CUR_SYS  = platform.system()
 
 EXT_DISK = "F:/" if CUR_SYS == 'Windows' else '/Volumes/KINGSTON/'
+FIPS_MAP_PATH = EXT_DISK + "Homebuilder/"
 EXT_DISK += "Homebuilder/Variables/"
 RAW_PATH = EXT_DISK + "raw/"
 
@@ -85,6 +86,7 @@ class VarProcessor():
                 # create a name-fips map
                 if '2020' in fname:
                     cur_file['NAMES'] = [f".{c}, {s}" for s, c in zip(cur_file['STNAME'], cur_file['CTYNAME'])]
+                    # might want to find other source of mapping list to deal with the Connecticut county problem
                     name2fips = cur_file[['FIPS', 'NAMES']]
 
                 key_word = 'huest_' if '2009' in fname else 'HUESTIMATE'
@@ -126,9 +128,31 @@ class VarProcessor():
         wide_data_21_23 = wide_data_21_23.dropna(axis=1, how='all')
         wide_data_21_23.columns = ['STATE', '2021', '2022', '2023']
 
+        vacant_wide = wide_data_05_12.merge(wide_data_13_20, on='STATE', how='left')
+        vacant_wide = vacant_wide.merge(wide_data_21_23, on='STATE', how='left')
+
         # 1. drop 'STATE' == 'United States'
+        vacant_wide = vacant_wide[vacant_wide['STATE'] != 'United States']
 
         # 2. map the 'STATE' to state codes from fips2county.tsv.txt
+        state2code = pd.read_csv(
+            "../NewCoreLogic_Codes/Data/fips2county.tsv.txt",
+            delimiter='\t',
+            usecols=['StateFIPS', 'StateName'],
+            dtype='str'
+        )
+
+        state2code = state2code.rename(columns={'StateName': 'STATE'})
+        state2code = state2code.drop_duplicates()
+        vacant_wide = vacant_wide.merge(state2code, on='STATE', how='left')
+        vacant_wide = vacant_wide.drop(columns='STATE')
+
+        vacant_panel = pd.melt(vacant_wide, id_vars=["StateFIPS"], var_name="Year", value_name="Vacancy_rate")
+
+        if to_file:
+            vacant_panel.to_csv(EXT_DISK+out_fname, index=False)
+        else:
+            print(vacant_panel)
 
     def get_median_hh_income(self, out_fname="med_hh_income_panel.csv", to_file=True):
         to_cat = []
@@ -178,24 +202,79 @@ class VarProcessor():
 
             cur_file['FIPS'] = fname[6:11]
 
+            # take the end of each year as yearly data
+            cur_file = cur_file[cur_file['Month'] == 'M12']
+
             # rearrange column order
-            non_fips = [col for col in cur_file.columns if col != 'FIPS']
-            cur_file = cur_file[['FIPS'] + non_fips]
-
-            # TODO: how to combine month to year
-
-            print(cur_file)
-
-            return
+            cur_file = cur_file[['FIPS', 'Year', 'Unemployment']]
 
             to_cat.append(cur_file)
 
-        mhhi_panel = pd.concat(to_cat, ignore_index=True)
+        unemp_panel = pd.concat(to_cat, ignore_index=True)
 
         if to_file:
-            mhhi_panel.to_csv(EXT_DISK+out_fname, index=False)
+            unemp_panel.to_csv(EXT_DISK+out_fname, index=False)
         else:
-            print(mhhi_panel)
+            print(unemp_panel)
+
+    def get_wrluri(self, ver=2006, out_fname="WRLURI", to_file=True):
+        out_fname += f'_{ver}.csv'
+
+        type_spec_fips = {
+            "STATEFP": 'category',
+            "COUNTYFP": 'category',
+            "PLACEFP": 'str'
+        }
+        fips_map = pd.read_csv(
+            FIPS_MAP_PATH+"city_to_county_fips.txt",
+            delimiter='|', usecols=type_spec_fips.keys(), dtype=type_spec_fips
+        )
+        fips_map['FIPS'] = [s + c for s, c in zip(fips_map['STATEFP'], fips_map['COUNTYFP'])]
+        fips_map = fips_map[['FIPS', 'PLACEFP']]
+
+        type_spec_2018 = {
+            'statecode': 'category',  # might be missing leading 0, need to fix
+            'countycode18': 'str',  # might be missing leading 0, need to fix
+            'WRLURI18': 'float'
+        }
+
+        type_spec_2006 = {
+            'ufips': 'str',  # might be missing leading 0, need to fix
+            'WRLURI': 'float'
+        }
+
+        if ver == 2006:
+            wi_2006 = pd.read_stata(f"{RAW_PATH}WRLURI_1_24_2008.dta")
+        elif ver == 2018:
+            wi_2018 = pd.read_stata(f"{RAW_PATH}WRLURI_01_15_2020.dta")
+        else:
+            print("Not a valid version, only 2006 and 2018 available...")
+            return
+
+        wi_2006 = wi_2006[['ufips', 'WRLURI']].rename(columns={'ufips': 'PLACEFP'})
+        wi_2006['PLACEFP'] = wi_2006['PLACEFP'].astype(int).astype(str).str.zfill(5)
+
+        wi_2006 = wi_2006.merge(fips_map, on='PLACEFP', how='left')
+
+        if to_file:
+            wi_2006.to_csv(EXT_DISK+out_fname, index=False)
+        else:
+            print(wi_2006)
+
+    def get_natural_disaster():
+        name_spec = {
+            'Incident Category': 'incident',
+            'Incident Begin Date': 'start_date', # 7/24/2024 12:00:00 AM
+            'Incident End Date': 'end_date',
+            'Fips State Code': 'stateFIPS',
+            'Fips County Code': 'countyFIPS'
+        }
+
+        cur_file = pd.read_csv(
+            f"{RAW_PATH}Incident_Type_Full_Data.csv",
+            dtype='str', usecols=name_spec.keys()
+        )
+
 
 
 def main():
@@ -205,8 +284,8 @@ def main():
     # vp.get_house_stock(to_file=False) # 75400
     # vp.get_vacancy()
     # vp.get_median_hh_income()
-    vp.get_unemployment()
-
+    # vp.get_unemployment()
+    vp.get_wrluri()
 
 
 
