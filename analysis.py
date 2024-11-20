@@ -40,6 +40,8 @@ COL_QTR = 'QUARTER'
 COL_RESALE_NEW = 'RESALE/NEW_CONSTRUCTION'
 COL_REGION = 'REGION' # TODO: need to make sure how they actually call this. West, North...
 COL_UNIT_P = 'UNIT_PRICE'  # per square feet
+COL_UNIT_P_MEAN = 'MEAN_UNIT_PRICE'
+COL_UNIT_P_MDN = 'MEDIAN_UNIT_PRICE'
 COL_SELLER = 'SELLER_NAME1'
 COL_SALE_AMT = 'SALE_AMOUNT'
 COL_CASE_CNT = 'CASE_CNT'
@@ -410,8 +412,10 @@ class Analysis():
 
         # some records have empty building area, ignore them when getting avg
         df_new_unit_price = df_new[df_new[COL_BLDG_AREA] != 0]
+
+        # NOTE: I think for each seller, we don't need to get their median unit price
         gped_new_unit_p = df_new_unit_price.groupby(key_set).agg(
-            UNIT_PRICE=(COL_UNIT_P, 'mean')
+            MEAN_UNIT_PRICE=(COL_UNIT_P, 'mean')
         ).reset_index()
 
         grouped_new = grouped_new.merge(gped_new_unit_p, on=key_set, how='left')
@@ -458,15 +462,13 @@ class Analysis():
             grouped = sub_df.groupby(COL_YR).agg(
                 SALE_AMOUNT=(COL_SALE_AMT, 'sum'),
                 CASE_CNT=(COL_CASE_CNT, 'sum'),
-                UNIT_PRICE=(COL_UNIT_P, 'mean')
+                MEAN_UNIT_PRICE=(COL_UNIT_P_MEAN, 'mean'),
+                MEDIAN_UNIT_PRICE=(COL_UNIT_P_MEAN, 'median')
             ).reset_index()
-
-            # Calculate YoY % change for unit price
-            # grouped[f'YOY_{COL_UNIT_P}'] = grouped[COL_UNIT_P].pct_change() * 100
 
             return grouped
 
-        # [Whole county] YEAR, SALE_AMOUNT, CASE_CNT, UNIT_PRICE, YOY_UNIT_PRICE
+        # [Whole county] YEAR, SALE_AMOUNT, CASE_CNT, MEAN_UNIT_PRICE, MEDIAN_UNIT_PRICE
         whole_county = agg_data(grouped_new)
         whole_county.columns = [f'COUNTY_{col}' if col != COL_YR else col for col in whole_county.columns]
 
@@ -502,10 +504,13 @@ class Analysis():
 
         # make yoy after ensuring all years are present
         for lvl in ['COUNTY', 'TOP', 'BOT']:
-            out_df[f'{lvl}_YOY_{COL_UNIT_P}'] = out_df[f'{lvl}_{COL_UNIT_P}'].pct_change() * 100
+            out_df[f'{lvl}_YOY_{COL_UNIT_P_MEAN}'] = out_df[f'{lvl}_{COL_UNIT_P_MEAN}'].pct_change() * 100
+            out_df[f'{lvl}_YOY_{COL_UNIT_P_MDN}'] = out_df[f'{lvl}_{COL_UNIT_P_MDN}'].pct_change() * 100
 
-        out_df['TOP_P_DIFF'] = out_df['TOP_UNIT_PRICE'] - out_df['COUNTY_UNIT_PRICE']
-        out_df['BOT_P_DIFF'] = out_df['BOT_UNIT_PRICE'] - out_df['COUNTY_UNIT_PRICE']
+        out_df['TOP_MEAN_PRICE_DIFF'] = out_df[f'TOP_{COL_UNIT_P_MEAN}'] - out_df[f'COUNTY_{COL_UNIT_P_MEAN}']
+        out_df['BOT_MEAN_PRICE_DIFF'] = out_df[f'BOT_{COL_UNIT_P_MEAN}'] - out_df[f'COUNTY_{COL_UNIT_P_MEAN}']
+        out_df['TOP_MEDIAN_PRICE_DIFF'] = out_df[f'TOP_{COL_UNIT_P_MDN}'] - out_df[f'COUNTY_{COL_UNIT_P_MDN}']
+        out_df['BOT_MEDIAN_PRICE_DIFF'] = out_df[f'BOT_{COL_UNIT_P_MDN}'] - out_df[f'COUNTY_{COL_UNIT_P_MDN}']
 
         return out_df
 
@@ -551,6 +556,8 @@ class Analysis():
             #   RESALE_SALE_AMOUNT, RESALE_CASE_ENT, TOP_P_DIFF, BOT_P_DIFF
             cur_df = self.__county_file_clean(cur_fips=fips, types_spec=types_spec)
 
+            # print(cur_df.columns)
+            # return
             if cur_df.empty: continue
 
             to_cat.append(cur_df)
@@ -1031,7 +1038,7 @@ class Analysis():
         # drop if COUNTY_YOY_UNIT_PRICE is NaN and not consecutive year
         exclude_na = ['COUNTY_YOY_UNIT_PRICE', 'TOP_UNIT_PRICE', 'BOT_UNIT_PRICE']
         plot_base = plot_base.dropna(subset=exclude_na)
-        plot_base = plot_base[plot_base['COUNTY_YOY_UNIT_PRICE'].abs() <= 50]
+        plot_base = plot_base[plot_base['COUNTY_YOY_UNIT_PRICE'].abs() <= 100]
         plot_base = plot_base[plot_base['IS_CONSEC'] == 'Y']
 
         # ================
@@ -1041,88 +1048,121 @@ class Analysis():
         # print(plot_base.loc[idx, :])
         # print(plot_base.loc[plot_base['TOP_CASE_CNT'] >= 25000, ['FIPS', 'YEAR']])
 
+
         # ==========
         #  Plotting
         # ==========
-        # 1. Quantity as y-axis
-        plot_1_data = plot_base.dropna(subset=['TOP_CASE_CNT', 'BOT_CASE_CNT'])
-        plot_1_data = plot_1_data[['COUNTY_YOY_UNIT_PRICE','TOP_CASE_CNT', 'BOT_CASE_CNT']]
+        dot_size = 10
 
-        plot_1_data = plot_1_data[plot_1_data['TOP_CASE_CNT'] <= 10000]
+        # 1. Quantity of top and bot as y-axis
+        def figure_1():
+            plot_1_data = plot_base.dropna(subset=['TOP_CASE_CNT', 'BOT_CASE_CNT'])
+            plot_1_data = plot_1_data[['COUNTY_YOY_UNIT_PRICE','TOP_CASE_CNT', 'BOT_CASE_CNT']]
 
-        fig, ax1 = plt.subplots(figsize=(8, 6))
+            plot_1_data = plot_1_data[plot_1_data['TOP_CASE_CNT'] <= 10000]
 
-        # Solid points for TOP
-        ax1.scatter(
-            plot_1_data['COUNTY_YOY_UNIT_PRICE'],
-            plot_1_data['TOP_CASE_CNT'],
-            label='TOP 33%',
-            color='black',
-            s=100,
-            alpha=0.8
-        )
+            fig, ax1 = plt.subplots(figsize=(8, 6))
 
-        # Hollow points for BOT
-        ax1.scatter(
-            plot_1_data['COUNTY_YOY_UNIT_PRICE'],
-            plot_1_data['BOT_CASE_CNT'],
-            label='BOT 33%',
-            edgecolors='Red',
-            facecolors='none',
-            s=100,
-            alpha=0.8
-        )
+            # Solid points for TOP
+            ax1.scatter(
+                plot_1_data['COUNTY_YOY_UNIT_PRICE'],
+                plot_1_data['TOP_CASE_CNT'],
+                label='TOP 33%',
+                color='black',
+                s=dot_size,
+                alpha=0.8
+            )
 
-        ax1.set_xlabel('County Avg. Price Change', fontsize=12)
-        ax1.set_ylabel('Quantity Sold', fontsize=12)
-        # ax1.set_title('Scatter Plot with Solid and Hollow Points', fontsize=14)
-        ax1.legend()
-        ax1.grid(True)
+            # Hollow points for BOT
+            ax1.scatter(
+                plot_1_data['COUNTY_YOY_UNIT_PRICE'],
+                plot_1_data['BOT_CASE_CNT'],
+                label='BOT 33%',
+                edgecolors='Red',
+                facecolors='none',
+                s=dot_size,
+                alpha=0.8
+            )
+
+            ax1.set_xlabel('County Avg. Price Change', fontsize=12)
+            ax1.set_ylabel('Quantity Sold', fontsize=12)
+            # ax1.set_title('Scatter Plot with Solid and Hollow Points', fontsize=14)
+            ax1.legend()
+            ax1.grid(True)
+
+
+        # 2. Relative quantity as y-axis
+        def figure_2():
+            plot_2_data = plot_base.dropna(subset=['TOP_CASE_CNT', 'BOT_CASE_CNT'])
+            plot_2_data = plot_2_data[['COUNTY_YOY_UNIT_PRICE','TOP_CASE_CNT', 'BOT_CASE_CNT']]
+            plot_2_data['quantity_ratio'] = plot_2_data['TOP_CASE_CNT'] / plot_2_data['BOT_CASE_CNT']
+
+            plot_2_data = plot_2_data[plot_2_data['quantity_ratio'] <= 200]
+
+            fig, ax2 = plt.subplots(figsize=(8, 6))
+
+            # Solid points for TOP
+            ax2.scatter(
+                plot_2_data['COUNTY_YOY_UNIT_PRICE'],
+                plot_2_data['quantity_ratio'],
+                label='TOP 33%',
+                color='black',
+                s=dot_size,
+                alpha=0.8
+            )
+
+            ax2.set_xlabel('County Avg. Price Change', fontsize=12)
+            ax2.set_ylabel('Top-Bot Quantity Sold Ratio', fontsize=12)
+            # ax2.set_title('Scatter Plot', fontsize=14)
+            ax2.legend()
+            ax2.grid(True)
+
+
+        # 3. Top and bot price diff as y-axis
+        def figure_3():
+            plot_3_data = plot_base.dropna(subset=['TOP_P_DIFF', 'BOT_P_DIFF'])
+            plot_3_data = plot_3_data[['COUNTY_YOY_UNIT_PRICE','TOP_P_DIFF', 'BOT_P_DIFF']]
+
+            # drop if top are negative
+            cond = (plot_3_data['TOP_P_DIFF'] >= 0) & (plot_3_data['TOP_P_DIFF'] < 25000)
+            plot_3_data = plot_3_data[cond]
+
+            # some filtering
+            plot_3_data = plot_3_data[plot_3_data['TOP_P_DIFF'] <= 1000]
+
+            fig, ax3 = plt.subplots(figsize=(8, 6))
+
+            # Solid points for TOP
+            ax3.scatter(
+                plot_3_data['COUNTY_YOY_UNIT_PRICE'],
+                plot_3_data['TOP_P_DIFF'],
+                label='TOP 33%',
+                color='black',
+                s=dot_size,
+                alpha=0.8
+            )
+
+            # Hollow points for BOT
+            ax3.scatter(
+                plot_3_data['COUNTY_YOY_UNIT_PRICE'],
+                plot_3_data['BOT_P_DIFF'],
+                label='BOT 33%',
+                edgecolors='Red',
+                facecolors='none',
+                s=dot_size,
+                alpha=0.8
+            )
+
+            ax3.set_xlabel('County Avg. Price Change (%)', fontsize=12)
+            ax3.set_ylabel('Price Diff', fontsize=12)
+            # ax3.set_title('Scatter Plot with Solid and Hollow Points', fontsize=14)
+            ax3.legend()
+            ax3.grid(True)
+
+        figure_3()
 
         # Show the plot
         plt.show()
-
-        # 2. Price diff as y-axis
-        # plot_2_data = plot_base.dropna(subset=['TOP_P_DIFF', 'BOT_P_DIFF'])
-        # plot_2_data = plot_2_data[['COUNTY_YOY_UNIT_PRICE','TOP_P_DIFF', 'BOT_P_DIFF']]
-
-        # # drop if top are negative
-        # cond = (plot_2_data['TOP_P_DIFF'] >= 0) & (plot_2_data['TOP_P_DIFF'] < 25000)
-        # plot_2_data = plot_2_data[cond]
-
-        # # print(plot_2_data.describe())
-
-        # fig, ax2 = plt.subplots(figsize=(8, 6))
-
-        # # Solid points for TOP
-        # ax2.scatter(
-        #     plot_2_data['COUNTY_YOY_UNIT_PRICE'],
-        #     plot_2_data['TOP_P_DIFF'],
-        #     label='TOP 33%',
-        #     color='black',
-        #     s=50,
-        #     alpha=0.8
-        # )
-
-        # # Hollow points for BOT
-        # ax2.scatter(
-        #     plot_2_data['COUNTY_YOY_UNIT_PRICE'],
-        #     plot_2_data['BOT_P_DIFF'],
-        #     label='BOT 33%',
-        #     edgecolors='Red',
-        #     facecolors='none',
-        #     s=50,
-        #     alpha=0.8
-        # )
-
-        # ax2.set_xlabel('County Avg. Price Change (%)', fontsize=12)
-        # ax2.set_ylabel('Price Diff', fontsize=12)
-        # # ax2.set_title('Scatter Plot with Solid and Hollow Points', fontsize=14)
-        # ax2.legend()
-        # ax2.grid(True)
-
-        # # Show the plot
-        # plt.show()
 
     def __archive_make_hhi_panel(self, filename, gen_data=False):
         '''
