@@ -298,6 +298,8 @@ class VarProcessor():
         )
         nd_record = nd_record.rename(columns=name_spec)
 
+        nd_record = nd_record.dropna(subset=['start_date', 'end_date'])
+
         # clean date
         nd_record['start_date'] = pd.to_datetime(nd_record['start_date'])
         nd_record['end_date'] = pd.to_datetime(nd_record['end_date'])
@@ -317,10 +319,25 @@ class VarProcessor():
             'FIPS', 'start_year', 'start_month', 'end_year', 'end_month', 'incident'
         ]]
 
+        # nd_record['start_year'] = nd_record['start_year'].astype(int)
+        # nd_record['end_year'] = nd_record['end_year'].astype(int)
+
         nd_record = nd_record.sort_values(
             by=['FIPS', 'start_year'], ascending=[True, True]).reset_index(drop=True)
 
-        grouped_record = nd_record.groupby(['FIPS', 'start_year']).size().reset_index(name='Count')
+        # make the duplicate rows based on the difference between start and end year
+        def expand_rows(row):
+            years = range(row['start_year'], row['end_year'] + 1)
+            return pd.DataFrame({
+                "FIPS": [row['FIPS']] * len(years),
+                "year": years
+            })
+
+        # Apply the function to expand the DataFrame
+        nd_record = pd.concat([expand_rows(row) for _, row in nd_record.iterrows()], ignore_index=True)
+
+        # grouped_record = nd_record.groupby(['FIPS', 'start_year']).size().reset_index(name='Count')
+        grouped_record = nd_record.groupby(['FIPS', 'year']).size().reset_index(name='Count')
 
         if to_file:
             grouped_record.to_csv(EXT_DISK+out_fname, index=False)
@@ -338,8 +355,8 @@ def main():
     # vp.get_vacancy()
     # vp.get_median_hh_income()
     # vp.get_unemployment()
-    vp.get_wrluri()
-    # vp.get_natural_disaster()  # notice some of the FIPS has 000 in the end, eg. 01000 => might indicate entire state
+    # vp.get_wrluri()
+    vp.get_natural_disaster()  # notice some of the FIPS has 000 in the end, eg. 01000 => might indicate entire state
 
 
 
