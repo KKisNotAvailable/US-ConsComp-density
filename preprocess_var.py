@@ -188,9 +188,10 @@ class VarProcessor():
         else:
             print(mhhi_panel)
 
-    def get_unemployment(self, out_fname="unemployment_panel.csv", to_file=True):
+    def get_unemployment(self, out_fname="unemployment_rate_panel.csv", to_file=True):
         to_cat = []
-        folder_path = f"{RAW_PATH}unemployment/"
+        # folder_path = f"{RAW_PATH}unemployment/"
+        folder_path = f"{RAW_PATH}unemp_rate/"
         for fname in tqdm(os.listdir(folder_path), desc=f"Processing Unemployment files"):
             # eg. unemp_01001.csv
 
@@ -200,10 +201,11 @@ class VarProcessor():
             rename_map = {
                 "Year": 'Year',
                 "Period": 'Month',
-                'Value': 'Unemployment'
+                'Value': 'Unemployment_rate'
             }
             try:
-                cur_file = pd.read_csv(f"{folder_path}{fname}", usecols=rename_map.keys())
+                cur_file = pd.read_csv(f"{folder_path}{fname}",
+                        usecols=rename_map.keys(), dtype={'Year': 'category'})
                 cur_file = cur_file.rename(columns=rename_map)
 
                 cur_file['FIPS'] = fname[6:11]
@@ -212,7 +214,7 @@ class VarProcessor():
                 cur_file = cur_file[cur_file['Month'] == 'M12']
 
                 # rearrange column order
-                cur_file = cur_file[['FIPS', 'Year', 'Unemployment']]
+                cur_file = cur_file[['FIPS', 'Year', 'Unemployment_rate']]
 
                 to_cat.append(cur_file)
             except:
@@ -354,9 +356,9 @@ def main():
     # vp.get_house_stock() # 75400
     # vp.get_vacancy()
     # vp.get_median_hh_income()
-    # vp.get_unemployment()
+    vp.get_unemployment()
     # vp.get_wrluri()
-    vp.get_natural_disaster()  # notice some of the FIPS has 000 in the end, eg. 01000 => might indicate entire state
+    # vp.get_natural_disaster()  # notice some of the FIPS has 000 in the end, eg. 01000 => might indicate entire state
 
 
 
