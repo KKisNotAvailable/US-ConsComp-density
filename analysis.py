@@ -8,6 +8,8 @@ from tqdm import tqdm
 import seaborn as sns
 import geopandas as gpd
 import matplotlib.pyplot as plt
+from matplotlib.colors import ListedColormap, Normalize, BoundaryNorm
+from matplotlib.cm import ScalarMappable
 import numpy as np
 from rapidfuzz import process, fuzz
 import json
@@ -18,9 +20,13 @@ CUR_SYS  = platform.system()
 
 EXT_DISK = "F:/" if CUR_SYS == 'Windows' else '/Volumes/KINGSTON/'
 VAR_PATH = EXT_DISK + "Homebuilder/Variables/"
+MAP_PATH = EXT_DISK + "Homebuilder/Maps/"
+IMG_PATH = EXT_DISK + "Homebuilder/Figures/"
 EXT_DISK += "Homebuilder/2016_files/"
 COUNTY_FILE_PATH = EXT_DISK + "cleaned_by_county/"
 STACKED_PATH = EXT_DISK + "processed_data/"
+
+FIPS_MAP_FILE = '../NewCoreLogic_Codes/Data/fips2county.tsv.txt'
 
 TXT_EXT = '.txt'
 CSV_EXT = '.csv'
@@ -66,8 +72,9 @@ GEO COLUMNS:
 # TODO: write replication documentation? I'm currently having too many code.
 
 class Analysis():
-    def __init__(self, out_path: str) -> None:
+    def __init__(self, out_path: str, plot_path: str) -> None:
         self.__out_path = out_path
+        self.__plot_path = plot_path
         self.threshold = 20
         self.sizex = 16
         self.sizey = 12
@@ -446,7 +453,7 @@ class Analysis():
 
         return grouped_new
 
-    def corelogic_seller_data_prep(self, folder_path, out_fname='corelogic_seller_panel.csv'):
+    def corelogic_seller_panel_prep(self, folder_path, out_fname='corelogic_seller_panel.csv'):
         '''
         This is for generating data for Prof. to test plots. Therefore, this will
         aggregate to county-seller level, rather than county level.
@@ -471,6 +478,90 @@ class Analysis():
             # Rows will be each year, columns include:
             #   FIPS, YEAR,
             cur_df = self.__county_seller_file_clean(cur_fips=fips, types_spec=types_spec)
+
+            # print(cur_df)
+            # return
+            if cur_df.empty: continue
+
+            to_cat.append(cur_df)
+
+        panel_df = pd.concat(to_cat, ignore_index=True)
+
+        panel_df.to_csv(f"{self.__out_path}{out_fname}", index=False)
+
+        return
+
+    def __county_stackyear_clean(self, cur_fips, types_spec: dict):
+        '''
+        The resulting data for each county would be just a row, same columns
+        across counties: FIPS, HHI, case_cnt
+        '''
+        # the county file could include no new construction or even no data at all
+        df = pd.read_csv(
+            f"{COUNTY_FILE_PATH}{cur_fips}.csv",
+            usecols=types_spec.keys(),
+            dtype=types_spec
+        )
+        # in the loop calling this function, returned empty will be ignored.
+        if df.empty: return df
+
+        # make numeric
+        df[COL_SALE_AMT] = pd.to_numeric(df[COL_SALE_AMT], errors='coerce')
+
+        # use only the new constructions
+        df = df[df[COL_RESALE_NEW] == 'N']
+
+        # keep type of houses we need
+        keep_list = ['10', '11', '80', '21', '22', '00']
+        df = df[df['PROPERTY_INDICATOR'].isin(keep_list)]
+
+        # clean seller
+        df = self.__clean_firm_names(df)
+
+        # We are stacking yearly data, so only need to group by seller
+        grouped_df = df.groupby(COL_SELLER).agg(
+            SALE_AMOUNT=(COL_SALE_AMT, 'sum'),
+            CASE_CNT=(COL_SELLER, 'count')
+        ).reset_index()
+
+        # 1. Get total case count (or simply df.shape[0] works)
+        ttl_case_cnt = sum(grouped_df[COL_CASE_CNT])
+
+        # 2. HHI = sum((x_i/X)^2), notice the base is top 50
+        TOP_N = 50
+        hhi_prep = grouped_df[COL_SALE_AMT].nlargest(TOP_N) / \
+            grouped_df[COL_SALE_AMT].sum()
+
+        data = {
+            "FIPS": cur_fips,
+            "HHI": sum(hhi_prep ** 2),
+            COL_CASE_CNT: ttl_case_cnt
+        }
+
+        return pd.DataFrame([data])
+
+    def corelogic_stack_year_prep(self, folder_path, out_fname='for_heat_map.csv'):
+        '''
+        This data is basically solely for the use of plotting heat map for counties.
+        Since all other plots do not require aggregation on the years.
+        '''
+        types_spec = {
+            "SELLER_NAME1": 'str',
+            "SALE_AMOUNT": 'str',
+            "PROPERTY_INDICATOR": 'category',
+            "RESALE/NEW_CONSTRUCTION": 'category' # M: re-sale, N: new construction
+        }
+
+        to_cat = []
+        # loop through the folder
+        for fname in tqdm(os.listdir(folder_path), desc=f"Processing FIPS files"):
+            if not fname.endswith(CSV_EXT): continue
+
+            fips = fname.replace(CSV_EXT, "")
+
+            # Rows will be each year, columns include:
+            #   FIPS, HHI, CASE_CNT
+            cur_df = self.__county_stackyear_clean(cur_fips=fips, types_spec=types_spec)
 
             # print(cur_df)
             # return
@@ -665,14 +756,11 @@ class Analysis():
 
         return out_df
 
-    def corelogic_data_prep(self, folder_path, out_fname='corelogic_panel.csv'):
+    def corelogic_panel_prep(self, folder_path, out_fname='corelogic_panel.csv'):
         '''
         This function will loop through every fips file in the folder and collect
         needed info one by one, finally aggregate them and save for later analysis.
         '''
-        # ================
-        #  Basic Cleaning
-        # ================
         # here list all available columns and commented out the unused ones.
         types_spec = {
             # "FIPS": 'category',
@@ -719,175 +807,112 @@ class Analysis():
 
         return
 
-    def __archive_deed_prep(self, is_yearly=True, gen_data=False, period=[], scale=""):
+    def make_full_panel(self, base_panel, out_fname='homebuilder_panel.csv'):
         '''
-        This method would prepare a deed dataset from the stacked csv for analysis.
-        Specifically, this data is stacked data grouped by year, state, fips.
-        And the value columns are the sum of sale amount and case count.
+        Currently don't want to include the feature of adding variables, will
+        default include all.
 
         Parameters
         ----------
-        is_yearly:
-        gen_data:
-        period: list.
-            if not porvided would use all the years available.
-        scale: str.
-            can be "states", "counties", or "" (will include both)
-
-        Notice:
-        1. we do not calculate the HHI here, since we will calculate HHI for
-           years seperated and aggregated.
-        2. the unique seller count is a little hard to present in this dataset
-           因為在同state不同county中也可能有同一個seller, 以目前資料設計來看, 這樣依state加總就會失真
+        base_panel: str.
+            the corelogic panel.
         '''
-        ddf = dd.read_csv('data/deed_stacked.csv')
 
-        cols_to_clean = [
-            "FIPS", # = counties
-            "SITUS_STATE", # eg. CA
-            "SELLER NAME1",
-            "SALE AMOUNT",
-            "RECORDING DATE", # yyyymmdd, int64
-            "SALE DATE" # yyyymmdd, int64
-        ]
+        type_spec = {
+            'FIPS': 'str'
+        }
+        panel_df = pd.read_csv(self.__out_path+base_panel, dtype=type_spec)
+        panel_df = panel_df.rename(columns={"YEAR": 'Year'})
+        panel_df['StateFIPS'] = panel_df['FIPS'].str[:2]
 
-        ddf = ddf[cols_to_clean]
+        # >> Vacancy starts from 2005, and is state level: StateFIPS,Year,Vacancy_rate
+        va_data = pd.read_csv(f"{VAR_PATH}vacancy_panel.csv", dtype={"StateFIPS": 'category'})
+        panel_df = panel_df.merge(va_data, on=['StateFIPS', 'Year'], how='left')
 
-        # 1. data prep
-        #   1.1 ignore rows if any of those columns is empty
-        #   1.2 make the STATEFP column, since there are some typo of SITUS_STATE
-        #   1.3 fill the 'SALE DATE' when 0 with 'RECORDING DATE'
-        #   1.4 make the 'year' column
-        #       (opt.) ignore the rows with 'year' == 0,
-        #              should be around 5831 after combining SALE and RECORDING
-        #   1.5 (opt.) when period provided, filter the data to contain only the period
+        # >> WRLURI only has 2006: PLACEFP,WRLURI,STATE,FIPS
+        wi_data = pd.read_csv(f"{VAR_PATH}WRLURI_2006.csv", dtype={"FIPS": 'category'})
+        wi_data = wi_data[['FIPS', 'WRLURI']]
+        wi_data = wi_data.dropna()
+        # drop rows with duplicates in FIPS, keeping the row with the max value in WRLURI
+        wi_data = wi_data.loc[wi_data.groupby('FIPS', observed=True)['WRLURI'].idxmax()]
 
-        ddf = ddf.dropna(subset=cols_to_clean)
+        panel_df = panel_df.merge(wi_data, on='FIPS', how='left')
 
-        ddf['STATEFP'] = ddf['FIPS'].astype(str).str.zfill(5).str[:2]
+        # >> Unemployment: FIPS,Year,Unemployment
+        unemp_data = pd.read_csv(f"{VAR_PATH}unemployment_panel.csv", dtype={"FIPS": 'category'})
+        unemp_data['Unemployment'] = unemp_data['Unemployment'].replace('-', '0').astype(int)
+        panel_df = panel_df.merge(unemp_data, on=['FIPS', 'Year'], how='left')
 
-        ddf['SALE DATE'] = ddf['SALE DATE'].mask(ddf['SALE DATE'] == 0, ddf['RECORDING DATE'])
+        # >> Unemployment_rate: FIPS,Year,Unemployment_rate
+        unemp_data = pd.read_csv(f"{VAR_PATH}unemployment_rate_panel.csv", dtype={"FIPS": 'category'})
+        unemp_data['Unemployment_rate'] = unemp_data['Unemployment_rate'].replace('-', '0').astype(float)
+        panel_df = panel_df.merge(unemp_data, on=['FIPS', 'Year'], how='left')
 
-        ddf['year'] = ddf['SALE DATE'] // 10000
-        ddf = ddf[ddf['year'] != 0].reset_index(drop=True)
-        if is_yearly:
-            pre_group_base = ['year']
-        else:
-            pre_group_base = []
+        # >> Population: FIPS,Year,Population
+        pop_data = pd.read_csv(f"{VAR_PATH}pop_panel.csv", dtype={"FIPS": 'category'})
+        pop_data = pop_data.sort_values(by=['FIPS', 'Year'])
+        pop_data['Pop_yoy'] = pop_data.groupby('FIPS')['Population'].pct_change() * 100
 
-        if period:
-            s, e = period
-            ddf = ddf[ddf['year'].between(s, e)]
+        panel_df = panel_df.merge(pop_data, on=['FIPS', 'Year'], how='left')
 
-        # 2. group by year, STATEFP, FIPS
-        #   2-1. count cases
-        #   2-2. sum "SALE AMOUNT"
+        # >> Natural disaster: FIPS,year,Count
+        nd_data = pd.read_csv(f"{VAR_PATH}natural_disaster_panel.csv", dtype={"FIPS": 'category'})
+        nd_data = nd_data.rename(columns={"year": 'Year', "Count": 'disaster_cnt'})
+        panel_df = panel_df.merge(nd_data, on=['FIPS', 'Year'], how='left')
+        panel_df['disaster_cnt'] = panel_df['disaster_cnt'].fillna(0)
 
-        if not scale:
-            grouped_results = {
-                "FIPS": None,
-                "STATEFP": None
-            }
-        else:
-            scale_col = "FIPS" if scale == 'counties' else "STATEFP"
-            grouped_results = {scale_col: None}
+        # >> Median hh income: FIPS,Year,Median_HH_income
+        mhhi_data = pd.read_csv(f"{VAR_PATH}med_hh_income_panel.csv", dtype={"FIPS": 'category'})
+        panel_df = panel_df.merge(mhhi_data, on=['FIPS', 'Year'], how='left')
 
-        for c in grouped_results.keys():
-            group_base = pre_group_base + [c]
+        # >> House stock: FIPS,Year,House_stock
+        hs_data = pd.read_csv(f"{VAR_PATH}house_stock_panel.csv", dtype={"FIPS": 'category'})
+        panel_df = panel_df.merge(hs_data, on=['FIPS', 'Year'], how='left')
 
-            to_cat = [
-                ddf.groupby(group_base)\
-                    .agg(
-                        case_cnt=('SALE DATE', 'count'),
-                        sale_amt=('SALE AMOUNT', 'sum')
-                    )\
-                    .compute(),
-                # since the following is a series, no need to specify column when renaming
-                ddf.groupby(group_base)['SELLER NAME1']\
-                    .nunique()\
-                    .rename('uniq_seller_cnt')\
-                    .compute()
-            ]
+        # >> State HPI (use not-seasonal adjusted, index_sa is empty for states)
+        hs_data = pd.read_csv(f"{VAR_PATH}us_hpi.csv",
+                    usecols=['hpi_flavor', 'level', 'place_id', 'yr', 'period', 'index_nsa'])
 
-            # for computing Herfindahl-Hirschman Index
-            full_list = ddf.groupby(group_base + ['SELLER NAME1'])\
-                .agg(
-                    case_cnt=('SALE DATE', 'count'),
-                    sale_amt=('SALE AMOUNT', 'sum')
-                )\
-                .reset_index()\
-                .compute()
+        fips_map = pd.read_csv(FIPS_MAP_FILE, delimiter='\t',
+                    usecols=['StateAbbr', 'StateFIPS'], dtype={"StateFIPS": 'str'})
+        fips_map = fips_map.drop_duplicates().reset_index(drop=True)
 
-            TOP_N = 50 # defined by HHI
-            # since 'full_list' is not large, using apply is reasonable
-            # top 50 case_cnt and sale_amt
-            # NOTE: grp means the groups during the group by process,
-            #       we can treat each of them as a pd.series and apply operations accordingly
-            to_cat.extend([
-                full_list.groupby(group_base)['case_cnt']\
-                    .apply(lambda grp: grp.nlargest(TOP_N).sum())\
-                    .rename(f'top_{TOP_N}_case_cnt'),
-                full_list.groupby(group_base)['sale_amt']\
-                    .apply(lambda grp: grp.nlargest(TOP_N).sum())\
-                    .rename(f'top_{TOP_N}_sale_amt')
-            ])
-            # HHI = sum((x_i/X)^2), notice the base is top 50
-            to_cat.extend([
-                full_list.groupby(group_base)['case_cnt']\
-                    .apply(
-                        lambda grp: sum((grp.nlargest(TOP_N) / grp.nlargest(TOP_N).sum()) ** 2)
-                    )\
-                    .rename('HHI_case_cnt'),
-                full_list.groupby(group_base)['sale_amt']\
-                    .apply(
-                        lambda grp: sum((grp.nlargest(TOP_N) / grp.nlargest(TOP_N).sum()) ** 2)
-                    )\
-                    .rename('HHI_sale_amt')
-            ])
+        # take the year end
+        hs_data = hs_data[hs_data['hpi_flavor'] == 'purchase-only']
+        hs_data = hs_data[hs_data['level'] == 'State']
+        hs_data = hs_data[hs_data['period'] == 4]
+        hs_data = hs_data.rename(
+            columns={"yr": 'Year', "index_nsa": 'HPI', "place_id": 'StateAbbr'})
 
-            # concat horizontally
-            grouped_results[c] = pd.concat(to_cat, axis=1).reset_index()\
-                .sort_values(by=group_base, ascending=[True] * len(group_base))
+        hs_data = hs_data.merge(fips_map, on='StateAbbr', how='left')
+        hs_data = hs_data[['Year', 'StateFIPS', 'HPI']]
+        hs_data = hs_data.sort_values(by=['StateFIPS', 'Year'])
 
-            # give the states their abbreviation
-            if c == 'STATEFP':
-                states = gpd.read_file("data/cb_2018_us_state_500k/")
-                states = states[['STUSPS', 'STATEFP']]
+        hs_data['HPI_yoy'] = hs_data.groupby('StateFIPS')['HPI'].pct_change() * 100
 
-                tmp = pd.merge(grouped_results[c], states, on='STATEFP', how='left')
-                tmp = tmp[['STUSPS'] + [col for col in tmp.columns if col != 'STUSPS']]
-                if is_yearly:
-                    tmp = tmp[['year'] + [col for col in tmp.columns if col != 'year']]
+        panel_df = panel_df.merge(hs_data, on=['StateFIPS', 'Year'], how='left')
 
-                grouped_results[c] = tmp
-                # 這裡可以考慮把grouped_results 裡的 'STATEFP' 刪掉換成 'STUSPS'
-                # (for consistancy with other functions)
+        # ============================
+        #  Other derivative variables
+        # ============================
+        # is consecutive year
+        def check_consecutive(group):
+            # Check if current and previous years both have non-null values
+            is_consec = group['COUNTY_MEAN_UNIT_PRICE'].notna() & group['COUNTY_MEAN_UNIT_PRICE'].shift(1).notna()
+            return is_consec.replace({True: 'Y', False: None})
 
-        if gen_data:
-            for c, res in grouped_results.items():
-                fname = f"agg_result_{c}.csv"
-                if is_yearly:
-                    fname = 'yearly_' + fname
-                self.file_out(df=res, filename=fname)
-        else:
-            if not scale:
-                return grouped_results # this is a dict of dfs
-            return grouped_results['FIPS'] if scale == 'counties' else grouped_results['STATEFP']
-        return
+        # Apply the function for each FIPS group
+        panel_df['is_consec_year'] = panel_df.groupby('FIPS', group_keys=False).apply(check_consecutive)
 
-    def __archive_deed_plot_heat_map(self, filename, scale='states', save_fig=False):
+        panel_df.to_csv(f"{self.__out_path}{out_fname}", index=False)
+
+    def plot_hhi_heat_map(self, filename, is_hhi, save_fig=False):
         '''
         REF: https://dev.to/oscarleo/how-to-create-data-maps-of-the-united-states-with-matplotlib-p9i
         plot the non yearly result on maps
         1. map points?
         2. current only has abbrev. of states
-
-        TODO: need to change this to be able to plot both state and counties
         '''
-        if not scale in ['states', 'counties']:
-            print("Please state a valid scale, either 'states' or 'counties'")
-            return
-
         def translate_geometries(df, x, y, scale, rotate):
             df.loc[:, "geometry"] = df.geometry.translate(yoff=y, xoff=x)
             center = df.dissolve().centroid.iloc[0]
@@ -905,28 +930,20 @@ class Analysis():
 
             return pd.concat([df_main_land, df_alaska, df_hawaii])
 
-        f = self.__out_path + filename # TODO: should change the way of writing this
-        HHI = pd.read_csv(f) # or maybe we can combine the scale indicator with the filename
+        hhi_data = pd.read_csv(self.__out_path+filename, dtype={"FIPS": 'str'})
+        # assign na and 0 to be -1
+        hhi_data['HHI'] = hhi_data['HHI']\
+            .apply(lambda x: -1 if pd.isna(x) or x == 0 else x)
+        hhi_data['ENI'] = 1 / hhi_data['HHI']
 
-        cur_hhi = 'HHI_sale_amt'
-        cur_scale = 'STUSPS' if scale == 'states' else 'FIPS'
-        scale_new_name = 'STUSPS' if scale == 'states' else 'GEOID'
+        cur_target = 'HHI' if is_hhi else 'ENI'
 
-        keep_cols = [cur_scale, cur_hhi, 'case_cnt']
-        HHI = HHI[keep_cols]
-        HHI.rename(
-            columns={
-                cur_scale: scale_new_name,
-                cur_hhi: 'HHI'
-            },
-            inplace=True
-        )
-
-        counties = gpd.read_file("data/cb_2018_us_county_500k/")
+        # Get map
+        counties = gpd.read_file(f"{MAP_PATH}cb_2018_us_county_500k/")
         counties = counties[~counties.STATEFP.isin(["72", "69", "60", "66", "78"])]
-        counties["GEOID"] = counties["GEOID"].astype(int)
+        counties = counties.rename(columns={"GEOID": 'FIPS'})
 
-        states = gpd.read_file("data/cb_2018_us_state_500k/")
+        states = gpd.read_file(f"{MAP_PATH}cb_2018_us_state_500k/")
         # remove "unincorporated territories":
         # "Puerto Rico", "American Samoa", "United States Virgin Islands"
         # "Guam", "Commonwealth of the Northern Mariana Islands"
@@ -942,96 +959,79 @@ class Analysis():
 
         # add data with color to the states df.
         low_case_cnt_color = "lightgrey"
-        data_breaks = [
-            (90, "#ff0000", "Top 10%"),   # Bright Red
-            (70, "#ff4d4d", "90-70%"),    # Light Red
-            (50, "#ff9999", "70-50%"),    # Lighter Red
-            (30, "#ffcccc", "50-30%"),    # Pale Red
-            (0,  "#ffe6e6", "Bottom 30%") # Very Light Red
+        data_breaks_hhi = [
+            (0.25, "#B22222", f"{cur_target} ≥ 0.25"),        # Deep Red
+            (0.2, "#ff3333", f"0.2 ≤ {cur_target} < 0.25"),   # Lighter Red
+            (0.15, "#ff6666", f"0.15 < {cur_target} ≤ 0.2"),  # Medium Red
+            (0.1, "#ff9999", f"0.1 < {cur_target} ≤ 0.15"),   # Light Red
+            (0.05, "#ffcccc", f"0.05 < {cur_target} ≤ 0.1"),  # Pale Red
+            (0, "#ffe6e6", f"0 ≤ {cur_target} < 0.05")        # Very Light Red
         ]
+        # TODO: create this from above
+        data_breaks_eni = [
+            (20, "#ffe6e6", f"{cur_target} ≥ 0.25"),          # Very Light Red
+            (10, "#ffcccc", f"0.2 ≤ {cur_target} < 0.25"),    # Pale Red
+            (6.67, "#ff9999", f"0.15 < {cur_target} ≤ 0.2"),  # Light Red
+            (5, "#ff6666", f"0.1 < {cur_target} ≤ 0.15"),     # Medium Red
+            (4, "#ff3333", f"0.05 < {cur_target} ≤ 0.1"),     # Lighter Red
+            (1, "#B22222", f"0 ≤ {cur_target} < 0.05")        # Deep Red
+        ]
+
+        data_breaks = data_breaks_hhi if is_hhi else data_breaks_eni
+        upper_bound = 1 if is_hhi else 40
+        lab = 'Herfindahl–Hirschman index' if is_hhi else 'Effective Number index'
 
         def create_color(county_df, data_breaks, target):
             colors = []
-
             for i, row in county_df.iterrows():
-                for p, c, _ in data_breaks:
-                    if row[target] >= np.percentile(county_df[target], p):
+                for threshold, c, _ in data_breaks:
+                    if row[target] >= threshold:
                         colors.append(c)
                         break
-
+                else:
+                    colors.append(low_case_cnt_color)
             return colors
 
-        cur_geo = states if scale == 'states' else counties
-
-        to_plot = pd.merge(cur_geo, HHI, on=scale_new_name, how='left')
-        # since there will be some counties that has no HHI data, we fill them with 0
-        to_plot[['HHI', 'case_cnt']] = to_plot[['HHI', 'case_cnt']].fillna(0)
-        to_plot.loc[:, "color"] = create_color(to_plot, data_breaks, target='HHI')
+        to_plot = counties.merge(hhi_data, on='FIPS', how='left')
+        to_plot.loc[:, "color"] = create_color(to_plot, data_breaks, target=cur_target)
 
         # if 'case_cnt' is smaller than threshold, we set its color to 'low_case_cnt_color'
         cur_thresh = self.threshold
-        to_plot.loc[to_plot['case_cnt'] < cur_thresh, 'color'] = low_case_cnt_color
+        to_plot.loc[to_plot[COL_CASE_CNT] < cur_thresh, 'color'] = low_case_cnt_color
 
-        ax = counties.plot(edgecolor=edge_color + "55", color="None", figsize=(self.sizex, self.sizey))
-        to_plot.plot(ax=ax, edgecolor=edge_color, color=to_plot.color, linewidth=0.5)
+        colors = [b[1] for b in data_breaks[::-1]]
+        boundaries = [b[0] for b in data_breaks[::-1]] + [upper_bound]
+        cmap = ListedColormap(colors)
+        norm = BoundaryNorm(boundaries, ncolors=len(colors))
+
+        # Plot with corrected logic
+        fig, ax = plt.subplots(figsize=(self.sizex, self.sizey))
+        counties.plot(ax=ax, edgecolor=edge_color + "55", color="none")
+        to_plot.plot(ax=ax, edgecolor=edge_color, color=to_plot['color'], linewidth=0.5)
+
+        # Add color bar
+        sm = ScalarMappable(cmap=cmap, norm=norm)
+        sm.set_array([])
+        cbar = fig.colorbar(sm, ax=ax, orientation='vertical', shrink=0.4, pad=0.01)
+        cbar.set_label(lab)
+        # cbar.set_ticklabels()
 
         plt.axis("off")
 
         if save_fig:
-            plt.savefig(f"{self.__out_path+scale}.svg", format="svg")
+            plt.savefig(f"{self.__plot_path}{cur_target}_heat_map.png", dpi=300, transparent=True)
+            # plt.savefig(f"{self.__plot_path}{cur_target}_heat_map.svg", format="svg")
         else:
             plt.show()
         return
 
-    def __archive_deed_plot_time_series(self, filename, save_fig=False):
+    def plot_hhi_time_srs(self, filename, save_fig=False):
         '''
-        This function only considers plotting for all the states,
-        since including all the counties in one plot would be chaos.
-
-        Also this function might also support plotting for a given state or county.
-        (the corresponding data shold be provided though)
+        This originally only designed to plot states.
+        Pass for now.
         '''
-        f = self.__out_path + filename
-        df = pd.read_csv(f)
 
-        cur_tresh = self.threshold
-        df = df[df['year'] >= 1987] # since 1987 差不多HHI趨於穩定，也是FRED資料庫S&P CoreLogic Case-Shiller U.S. National Home Price Index 的起始點
-        df = df[df['case_cnt'] >= cur_tresh] # 把一些量太少的年份/row踢掉
-        cur_hhi = 'HHI_sale_amt'
-
-        # Define the full range of years expected in the data
-        full_years = np.arange(df['year'].min(), df['year'].max() + 1)
-
-        fig, ax = plt.subplots(figsize=(self.sizex, self.sizey))
-
-        n_color = len(set(df['STUSPS']))
-        palette = sns.color_palette("icefire", n_colors=n_color)  # distinct colors
-        state_colors = {state: palette[i] for i, state in enumerate(df['STUSPS'].unique())}
-
-        # Group by state and plot each group separately
-        for state, group in df.groupby('STUSPS'):
-            # Reindex to include all years, filling missing HHI with NaN
-            group = group.set_index('year').reindex(full_years).reset_index()
-            group['state'] = state  # Refill the state column
-            group[cur_hhi] = group[cur_hhi].interpolate()  # Interpolate missing HHI values (dropped in previous step)
-
-            # Plot the reindexed and interpolated data
-            ax.plot(group['year'], group[cur_hhi], label=state, marker='o', color=state_colors[state])
-
-        # Add plot details
-        ax.set_xlabel('Year')
-        ax.set_ylabel('HHI')
-        ax.set_title('HHI Over Time by State')
-        ax.legend(title='State', loc='upper right', ncol=3, fontsize='small', frameon=True)  # Place legend outside
-        plt.grid()
-
-        if save_fig:
-            plt.savefig(f"{self.__out_path}state_time_series.svg", format="svg")
-        else:
-            plt.show()
-        return
-
-    def __archive_deed_plot_scatter(self, period, filename, cur_index="HHI", filter_outlier=False, save_fig=False):
+    def plot_yoy_hhi_price_scatter(self, filename, is_hhi, is_mean, regime="", save_fig=False):
         '''
         This function plots the scatter plot of HHI, with x-axis being the
         county-level HHI and the y-axis being the house price change.
@@ -1040,102 +1040,149 @@ class Analysis():
         for counties, we assume all the properties have the same size, and use
         the average sale value as the housing price for each county.
         Still, we'll ignore the data with limited case count to avoided biased HHI.
-
-        Parameters
-        ----------
-        period: [start_year, end_year], list of int
-            specify the time period, where the HHI will be calculated with the data
-            in this range, and the price change will be the pct change from start_year
-            to end_year.
-        cur_index: "HHI" or "ENI", str
-            HHI is what we will compute, and ENI is the reciprocal of HHI.
         '''
-        # us_hpi = pd.read_csv("data/USSTHPI.csv")
+        cur_mid = 'MEAN' if is_mean else 'MEDIAN'
+        cur_target = 'HHI' if is_hhi else 'ENI'
+        price_col = f'COUNTY_YOY_{cur_mid}_UNIT_PRICE'
 
-        s, e = min(period), max(period)
-        hhi_col = 'HHI_sale_amt'
-        if 'FIPS' in filename:
-            cur_scale = 'counties'
-            cur_scale_col = 'FIPS'
+        panel_df = pd.read_csv(self.__out_path+filename, dtype={'FIPS': 'str'})
+
+        # make sure the yoy is really year by year
+        panel_df = panel_df[panel_df['is_consec_year'] == 'Y']
+
+        # drop if the COUNTY_CASE_CNT is less than threshold (notice this is for each year)
+        panel_df = panel_df[panel_df['COUNTY_CASE_CNT'] >= self.threshold]
+
+        # drop if COUNTY_YOY_UNIT_PRICE and HHI is NaN, and HHI should be > 0
+        exclude_na = [price_col, 'HHI']
+        panel_df = panel_df.dropna(subset=exclude_na)
+        panel_df = panel_df[panel_df['HHI'] > 0]
+
+        # confine yoy to be within 100%
+        panel_df = panel_df[panel_df[price_col].abs() <= 100]
+
+        # define good time and bad time
+        p_chg_mean = panel_df[price_col].mean()
+        p_chg_std = panel_df[price_col].std()
+        if regime.lower() == 'good':
+            panel_df = panel_df[panel_df[price_col] >= (p_chg_mean)]
+            regime = '_' + regime # for plot name
+        elif regime.lower() == 'bad':
+            panel_df = panel_df[panel_df[price_col] < (p_chg_mean)]
+            regime = '_' + regime # for plot name
         else:
-            cur_scale = 'states'
-            cur_scale_col = 'STUSPS'
+            regime = ''
 
-        # if the file exist then read it, otherwise run the code below
-        file_for_plot = self.__out_path + f'for_scatter_{s}_{e}.csv'
-        if os.path.exists(file_for_plot):
-            # If the file exists, read it
-            sub_df = pd.read_csv(file_for_plot)
-            print("File found. Data loaded from file.")
-        else:
-            df = pd.read_csv(self.__out_path+filename)
+        panel_df['ENI'] = 1 / panel_df['HHI']
 
-            # 1. make the county/state column
-            sub_df = pd.DataFrame(sorted(set(df[cur_scale_col])), columns=[cur_scale_col])
+        # ======
+        #  Plot
+        # ======
+        fig, ax1 = plt.subplots(figsize=(self.sizex, self.sizey))
+        dot_size = 10
 
-            # 2. do the avg price calculation, and append the year data to the sub_df
-            cols = [cur_scale_col, 'case_cnt', 'sale_amt']
-            for y in period:
-                tmp = df.loc[df['year'] == y, cols].reset_index(drop=True)
-                tmp['avg_price'] = tmp['sale_amt'] / tmp['case_cnt']
-                new_colname = [f"{c}_{y}" for c in tmp.columns if c != cur_scale_col]
-                tmp.columns = [cur_scale_col] + new_colname
-                sub_df = pd.merge(sub_df, tmp, on=cur_scale_col, how='left')
-
-            # 3. make the HHI for the designated period
-            #    (if takes too long, the deed_prep step can output a csv and read it when future call)
-            period_hhi = self.deed_prep(
-                is_yearly=False, gen_data=False, period=period, scale=cur_scale
-            )
-            cur_thresh = self.threshold
-            period_hhi = period_hhi.loc[period_hhi['case_cnt'] >= cur_thresh, [cur_scale_col, hhi_col]]
-            # if wish to use 'ENI', take the reciprocal of HHI
-            if cur_index == 'ENI':
-                period_hhi[hhi_col] = 1 / period_hhi[hhi_col]
-            sub_df = pd.merge(sub_df, period_hhi, on=cur_scale_col, how='left')
-
-            # 4. clean the data: by case count & if there are any empty value.
-            sub_df = sub_df.dropna().reset_index(drop=True)
-
-            # 5. calculate the price_chg%
-            sub_df['price_chg'] = (sub_df[f'avg_price_{e}'] / sub_df[f'avg_price_{s}']) - 1
-
-            # And generate the file for future use
-            sub_df.to_csv(file_for_plot, index=False)
-
-        # Filter outliers, currently using the interquartile range, IQR, method
-        # can consider other method like z-score, percentage, or std dev.
-        fo_remark = ""
-        if filter_outlier:
-            fo_remark = '_fo'
-            Q1 = sub_df['price_chg'].quantile(0.25)
-            Q3 = sub_df['price_chg'].quantile(0.75)
-            IQR = Q3 - Q1
-            lower_bound = Q1 - 1.5 * IQR
-            upper_bound = Q3 + 1.5 * IQR
-            # Filter out the outliers
-            sub_df = sub_df[(sub_df['price_chg'] >= lower_bound) & (sub_df['price_chg'] <= upper_bound)]
-
-        # 6. plot the percetage change with HHI as the scatter plot,
-        #    can consider add legend
-        plt.figure(figsize=(self.sizex, self.sizey))
-        plt.scatter(sub_df[hhi_col], sub_df['price_chg'], color='blue', edgecolor='k', alpha=0.5)
-
-        # Adding labels and title
-        plt.xlabel(cur_index)
-        plt.ylabel('Price Change (%)')
-        plt.title(f'Scatter Plot of {cur_index} vs. Price Change')
-        plt.grid(True)
+        # Solid points for TOP
+        ax1.scatter(
+            panel_df[cur_target],
+            panel_df[price_col],
+            color='black',
+            s=dot_size,
+            alpha=0.8
+        )
+        ax1.set_xlabel(cur_target, fontsize=12)
+        ax1.set_ylabel(f'YOY {cur_mid} UNIT PRICE', fontsize=12)
+        # ax1.set_title('Scatter Plot with Solid and Hollow Points', fontsize=14)
+        # ax1.legend()
+        ax1.grid(True)
 
         if save_fig:
-            plt.savefig(f"{self.__out_path}{cur_scale}_{cur_index}_scatter_{s}_{e}{fo_remark}.svg", format="svg")
+            plt.savefig(f"{self.__plot_path}yoy_{cur_mid}_price_{cur_target}{regime}_scatter_plot.png",
+                        dpi=300, transparent=True)
+            # plt.savefig(f"{self.__plot_path}yoy_{cur_mid}_price_{cur_target}_scatter_plot.svg", format="svg")
         else:
             plt.show()
 
+        return
+
+    def plot_hhi_period_price_chg_scatter(self, filename, is_hhi, is_mean, period: list, save_fig=False):
+        '''
+        This function plots the scatter plot of HHI, with x-axis being the
+        county-level HHI and the y-axis being the house price change.
+
+        Currently, since we have only the aggregated case count and sale amt
+        for counties, we assume all the properties have the same size, and use
+        the average sale value as the housing price for each county.
+        Still, we'll ignore the data with limited case count to avoided biased HHI.
+        '''
+        cur_mid = 'MEAN' if is_mean else 'MEDIAN'
+        cur_target = 'HHI' if is_hhi else 'ENI'
+        cur_price = f'COUNTY_{cur_mid}_UNIT_PRICE'
+
+        panel_df = pd.read_csv(self.__out_path+filename,
+                        dtype={'FIPS': 'str', 'YEAR': 'int'})
+
+        # drop if the COUNTY_CASE_CNT is less than threshold (notice this is for each year)
+        panel_df = panel_df[panel_df['COUNTY_CASE_CNT'] >= self.threshold]
+
+        # drop if  and HHI is NaN, and HHI should be > 0
+        exclude_na = [cur_price, 'HHI']
+        panel_df = panel_df.dropna(subset=exclude_na)
+        panel_df = panel_df[panel_df['HHI'] > 0]
+
+        panel_df['ENI'] = 1 / panel_df['HHI']
+
+        # make sure county data exist in both year, i.e. should have two entries
+        panel_df = panel_df[panel_df['YEAR'].isin(period)]
+        panel_df = panel_df[panel_df['FIPS'].map(panel_df['FIPS'].value_counts()) > 1]
+
+        # cols = ['YEAR', cur_price, cur_target]
+        cols = ['FIPS', cur_price]
+        df_year1 = panel_df.loc[panel_df['YEAR'] == period[0], cols]
+        df_year2 = panel_df.loc[panel_df['YEAR'] == period[1], cols]
+        price_data = df_year1.rename(columns={cur_price: 'p1'})\
+            .merge(df_year2.rename(columns={cur_price: 'p2'}), on='FIPS', how='left')
+
+        # TODO: for now, use the HHI from entire data, not period nor year specific
+        type_spec = {'FIPS': 'str', 'HHI': 'float'}
+        allyear_hhi = pd.read_csv(self.__out_path+'for_heat_map.csv',
+                        usecols=type_spec.keys(), dtype=type_spec)
+
+        for_plot = price_data.merge(allyear_hhi, on='FIPS', how='left')
+        for_plot['price_chg'] = for_plot['p2'] / for_plot['p1'] - 1
+        for_plot['ENI'] = 1 / for_plot['HHI']
+
+        # filter outliers
+        for_plot = for_plot[for_plot['price_chg'] < 3]
+        # for_plot = for_plot[for_plot[cur_target] < 100]  # for checking ENI
+
+        # ======
+        #  Plot
+        # ======
+        fig, ax1 = plt.subplots(figsize=(self.sizex, self.sizey))
+        dot_size = 10
+
+        # Solid points for TOP
+        ax1.scatter(
+            for_plot[cur_target],
+            for_plot['price_chg'],
+            color='black',
+            s=dot_size,
+            alpha=0.8
+        )
+        ax1.set_xlabel(cur_target, fontsize=12)
+        ax1.set_ylabel(f'{period[0]} to {period[1]} {cur_mid} UNIT PRICE CHG', fontsize=12)
+        # ax1.set_title('Scatter Plot with Solid and Hollow Points', fontsize=14)
+        # ax1.legend()
+        ax1.grid(True)
+
+        if save_fig:
+            plt.savefig(f"{self.__plot_path}yoy_{cur_mid}_price_{cur_target}_scatter_plot.svg", format="svg")
+        else:
+            plt.show()
 
         return
 
-    def plot_county_price_chg_based_scatter(self, panel_fname):
+    def plot_county_price_chg_based_scatter(self, panel_fname, save_fig=False):
         '''
         The county-level price change is the average unit price in each county, set as x-axis.
         On the y-axis, there are two options:
@@ -1149,7 +1196,7 @@ class Analysis():
 
         Parameters
         ----------
-        filename or dataframe
+        filename
             The stacked and cleaned county yearly panel data.
 
         Return
@@ -1183,8 +1230,7 @@ class Analysis():
         # (opt.) get the state abbrv and region as a new column for different coloring
 
         # drop if the COUNTY_CASE_CNT is less than threshold (notice this is for each year)
-        threshold = 50
-        plot_base = panel_df[panel_df['COUNTY_CASE_CNT'] >= threshold]
+        plot_base = panel_df[panel_df['COUNTY_CASE_CNT'] >= self.threshold]
 
         # drop if COUNTY_YOY_UNIT_PRICE is NaN and not consecutive year
         exclude_na = ['COUNTY_YOY_UNIT_PRICE', 'TOP_UNIT_PRICE', 'BOT_UNIT_PRICE']
@@ -1315,129 +1361,72 @@ class Analysis():
         # Show the plot
         plt.show()
 
-    def make_full_panel(self, base_panel, out_fname='homebuilder_panel.csv'):
-        '''
-        Currently don't want to include the feature of adding variables, will
-        default include all.
+    def plot_hhi_county_state_price_yoy_ratio_scatter(self, filename, is_hhi, is_mean, save_fig=False):
+        cur_mid = 'MEAN' if is_mean else 'MEDIAN'
+        cur_target = 'HHI' if is_hhi else 'ENI'
+        price_col = f'COUNTY_YOY_{cur_mid}_UNIT_PRICE'
 
-        Parameters
-        ----------
-        base_panel: str.
-            the corelogic panel.
-        '''
+        panel_df = pd.read_csv(self.__out_path+filename, dtype={'FIPS': 'str'})
 
-        type_spec = {
-            'FIPS': 'str'
-        }
-        panel_df = pd.read_csv(self.__out_path+base_panel, dtype=type_spec)
-        panel_df = panel_df.rename(columns={"YEAR": 'Year'})
-        panel_df['StateFIPS'] = panel_df['FIPS'].str[:2]
+        panel_df = panel_df[panel_df['is_consec_year'] == 'Y']
 
-        # >> Vacancy starts from 2005, and is state level: StateFIPS,Year,Vacancy_rate
-        data_va = pd.read_csv(f"{VAR_PATH}vacancy_panel.csv", dtype={"StateFIPS": 'category'})
-        panel_df = panel_df.merge(data_va, on=['StateFIPS', 'Year'], how='left')
+        # drop if the COUNTY_CASE_CNT is less than threshold (notice this is for each year)
+        panel_df = panel_df[panel_df['COUNTY_CASE_CNT'] >= self.threshold]
 
-        # >> WRLURI only has 2006: PLACEFP,WRLURI,STATE,FIPS
-        wi_data = pd.read_csv(f"{VAR_PATH}WRLURI_2006.csv", dtype={"FIPS": 'category'})
-        wi_data = wi_data[['FIPS', 'WRLURI']]
-        wi_data = wi_data.dropna()
-        # drop rows with duplicates in FIPS, keeping the row with the max value in WRLURI
-        wi_data = wi_data.loc[wi_data.groupby('FIPS', observed=True)['WRLURI'].idxmax()]
+        # drop if COUNTY_YOY_UNIT_PRICE and HHI is NaN, and HHI should be > 0
+        exclude_na = [price_col, 'HHI']
+        panel_df = panel_df.dropna(subset=exclude_na)
+        panel_df = panel_df[panel_df['HHI'] > 0]
 
-        panel_df = panel_df.merge(wi_data, on='FIPS', how='left')
+        # report same direction pct for each state and the US
+        panel_df['is_same_direction'] = panel_df[price_col] * panel_df['HPI_yoy'] > 0
 
-        # >> Unemployment: FIPS,Year,Unemployment
-        unemp_data = pd.read_csv(f"{VAR_PATH}unemployment_panel.csv", dtype={"FIPS": 'category'})
-        panel_df = panel_df.merge(unemp_data, on=['FIPS', 'Year'], how='left')
+        overall_percentage = panel_df['is_same_direction'].value_counts(normalize=True) * 100
+        print(f"Overall Percentage:\n{overall_percentage}")
 
-        # >> Population: FIPS,Year,Population
-        pop_data = pd.read_csv(f"{VAR_PATH}pop_panel.csv", dtype={"FIPS": 'category'})
-        panel_df = panel_df.merge(pop_data, on=['FIPS', 'Year'], how='left')
+        county_percentage = panel_df.groupby('StateFIPS')['is_same_direction'].value_counts(normalize=True).unstack() * 100
+        print(f"Percentage by StateFIPS:\n{county_percentage}")
 
-        # >> Natural disaster: FIPS,start_year,Count
-        nd_data = pd.read_csv(f"{VAR_PATH}natural_disaster_panel.csv", dtype={"FIPS": 'category'})
-        nd_data = nd_data.rename(columns={"start_year": 'Year', "Count": 'disaster_cnt'})
-        panel_df = panel_df.merge(nd_data, on=['FIPS', 'Year'], how='left')
-        panel_df['disaster_cnt'] = panel_df['disaster_cnt'].fillna(0)
+        # for plotting, restrict to only same direction, already True and False
+        panel_df = panel_df[panel_df['is_same_direction']]
 
-        # >> Median hh income: FIPS,Year,Median_HH_income
-        mhhi_data = pd.read_csv(f"{VAR_PATH}med_hh_income_panel.csv", dtype={"FIPS": 'category'})
-        panel_df = panel_df.merge(mhhi_data, on=['FIPS', 'Year'], how='left')
+        # TODO: change this, currently for checking only the positive time
+        panel_df = panel_df[panel_df[price_col] > 0]
 
-        # >> House stock: FIPS,Year,House_stock
-        hs_data = pd.read_csv(f"{VAR_PATH}house_stock_panel.csv", dtype={"FIPS": 'category'})
-        panel_df = panel_df.merge(hs_data, on=['FIPS', 'Year'], how='left')
+        panel_df['ENI'] = 1 / panel_df['HHI']
+        panel_df['yoy_ratio'] = panel_df[price_col] / panel_df['HPI_yoy']
 
-        panel_df.to_csv(f"{self.__out_path}{out_fname}", index=False)
+        # confine the ratio
+        panel_df = panel_df[panel_df['yoy_ratio'] <= 50]
 
-    def __archive_make_hhi_panel(self, filename, gen_data=False):
-        '''
-        The data is generated by this: deed_prep(is_yearly=True, gen_data=True)
-        '''
-        if 'FIPS' in filename:
-            cur_scale = 'counties'
-            cur_scale_col = 'FIPS'
+        # ======
+        #  Plot
+        # ======
+        fig, ax1 = plt.subplots(figsize=(self.sizex, self.sizey))
+        dot_size = 10
+
+        # Solid points for TOP
+        ax1.scatter(
+            panel_df[cur_target],
+            panel_df['yoy_ratio'],
+            color='black',
+            s=dot_size,
+            alpha=0.8
+        )
+        ax1.set_xlabel(cur_target, fontsize=12)
+        ax1.set_ylabel('County to State Relative PRICE GROWTH Magnitude', fontsize=12)
+        # ax1.set_title('Scatter Plot with Solid and Hollow Points', fontsize=14)
+        # ax1.legend()
+        ax1.grid(True)
+
+        if save_fig:
+            plt.savefig(f"{self.__plot_path}yoy_{cur_mid}_p_chg_rel_mag_{cur_target}_scatter_plot.png",
+                        dpi=300, transparent=True)
+            # plt.savefig(f"{self.__plot_path}yoy_{cur_mid}_p_chg_rel_mag_{cur_target}_scatter_plot.svg", format="svg")
         else:
-            cur_scale = 'states'
-            cur_scale_col = 'STUSPS'
+            plt.show()
 
-        df = pd.read_csv(self.__out_path+filename)
-
-        start_year = 1999 # since using 1987 would eliminate too many entries
-        end_year = max(df['year'])
-        cur_thresh = self.threshold
-
-        # 0. first filter the data:
-        #    0-1. year >= start_year
-        #    0-2. case_cnt >= 20 for all entries
-        #    0-3. need the presence of all years
-        df = df[df['year'] >= start_year].reset_index(drop=True)
-        df = df[df['case_cnt'] >= cur_thresh].reset_index(drop=True)
-
-        # 1. do operations for all rows: take reciprocal of HHI & avg. price
-        df['avg_price'] = df['sale_amt'] / df['case_cnt']
-        df['HHI'] = df['HHI_sale_amt']
-        df['ENI'] = 1 / df['HHI']
-
-        # 2. filter the counties/states out (year already sorted in the csv file)
-        #    and do the operation on filtered row: compute the yoy
-        regions_to_cat = []
-        for region in set(df[cur_scale_col]):
-            cond = df[cur_scale_col] == region
-            tmp = df.loc[cond]
-
-            tmp['price_chg_pct'] = tmp['avg_price'].pct_change()
-
-            if set(list(range(start_year, end_year + 1))).issubset(set(tmp['year'])):
-                # have to dropna here, or the first row will be dropped and no region could meet the if's cond
-                regions_to_cat.append(tmp.dropna())
-
-        # cat vertically
-        df = pd.concat(regions_to_cat, axis=0).reset_index(drop=True)
-
-        cols_to_keep = [
-            'year', 'FIPS', 'case_cnt', 'sale_amt', 'avg_price',
-            'price_chg_pct', 'HHI', 'ENI'
-        ]
-        df = df[cols_to_keep]
-
-        if gen_data:
-            out_file = self.__out_path + f"{cur_scale}_panel_data.csv"
-            df.to_csv(out_file, index=False)
-        else:
-            print(df)
-
-    def __archive_file_out(self, df, filename: str) -> None:
-        # TODO: filename validity check
-        # TODO: kwargs for to_csv
-
-        print(f"Generating {filename} ...")
-
-        filename = self.__out_path + filename
-        df.to_csv(filename, index=False)
-
-        print("DONE")
-
+        return
 
 def csv_to_dta(filepath, filename):
     data = pd.read_csv(f'{filepath}{filename}.csv')
@@ -1446,54 +1435,53 @@ def csv_to_dta(filepath, filename):
 
 
 def main():
-    a = Analysis(out_path=STACKED_PATH)
+    a = Analysis(out_path=STACKED_PATH, plot_path=IMG_PATH)
 
     # csv_to_dta(STACKED_PATH, 'corelogic_seller_panel')
+    # csv_to_dta(STACKED_PATH, 'homebuilder_panel')
 
-    # ==============
-    #  Data to prof
-    # ==============
+    # ======
+    #  Data
+    # ======
     # Seller data
-    # a.corelogic_seller_data_prep(COUNTY_FILE_PATH)
+    # a.corelogic_seller_panel_prep(COUNTY_FILE_PATH)
 
     # Get corelogic_panel
-    # a.corelogic_data_prep(COUNTY_FILE_PATH)
+    # a.corelogic_panel_prep(COUNTY_FILE_PATH)
+
+    # Get data for heat map
+    # a.corelogic_stack_year_prep(COUNTY_FILE_PATH)
 
     # Get homebuilder_panel
     # a.make_full_panel("corelogic_panel_33pct_v3.csv")  # combine corelogic panel with other variables
 
+    # =======
+    #  Plots
+    # =======
     # Plot the new series of figure
-    # a.plot_county_price_chg_based_scatter("corelogic_panel.csv")
+    # a.plot_county_price_chg_based_scatter("corelogic_panel_33pct_v3.csv")
 
-    # =====================================
-    #  Generates the HHI data for plotting
-    # =====================================
-    # a.data_prep()
+    # a.plot_hhi_heat_map('for_heat_map.csv',is_hhi=False, save_fig=True)
 
-    # ==========
-    #  Plotting
-    # ==========
-    # 1. draw heat map
-    tb_list = {
-        'states': 'agg_result_STATEFP.csv',
-        'counties': 'agg_result_FIPS.csv'
-    }
-    # for s, file in tb_list.items():
-    #     a.deed_plot_heat_map(file, save_fig=True, scale=s)
+    a.plot_yoy_hhi_price_scatter(
+        "homebuilder_panel.csv",
+        is_hhi=False, is_mean=True, regime='good', save_fig=True
+    )
 
-    # 2. draw time series of states from 1987
-    file = 'yearly_agg_result_STATEFP.csv'
-    # a.deed_plot_time_series(file, save_fig=True)
+    # a.plot_hhi_period_price_chg_scatter(
+    #     "corelogic_panel_33pct_v3.csv", period=[2006, 2012],
+    #     is_hhi=False, is_mean=True, save_fig=False
+    # )
 
-    # 3. scatter plot of HHI (x-axis) and price change (y-axis)
-    # change rate from 2006 to 2012 and 2012 to 2020
-    file = "yearly_agg_result_FIPS.csv"
-    # a.deed_plot_scatter(period=[2006, 2012], cur_index='ENI', filename=file, save_fig=False, filter_outlier=False)
-    # a.deed_plot_scatter(period=[2012, 2016], cur_index='ENI', filename=file, save_fig=False, filter_outlier=False)
+    # a.plot_hhi_period_price_chg_scatter(
+    #     "corelogic_panel_33pct_v3.csv", period=[2012, 2016],
+    #     is_hhi=True, is_mean=True, save_fig=False
+    # )
 
-    # 4. make the panel data (make yearly data to include price change)
-    file = "yearly_agg_result_FIPS.csv"
-    # a.make_hhi_panel(file, gen_data=True)
+    # a.plot_hhi_county_state_price_yoy_ratio_scatter(
+    #     "homebuilder_panel.csv",
+    #     is_hhi=False, is_mean=True, save_fig=True
+    # )
 
     # ===============
     #  Wild Thoughts
