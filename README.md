@@ -27,7 +27,8 @@ https://www.census.gov/topics/housing.html
 稍微看了看沒有目前缺的資料
 
 ### Regression Analysis
-#### need more data
+city to county FIPS mapping: https://www.census.gov/library/reference/code-lists/ansi.html#cousub
+#### Variables
 > county-level info
   1. [DONE] yearly population
      https://www.census.gov/data/tables/time-series/demo/popest/2020s-counties-total.html 下面的archive: Dataset
@@ -42,38 +43,46 @@ https://www.census.gov/topics/housing.html
      >> 2000-2009: 2000-2009/housing/totals/hu-est2009-us.csv
      >> 2010-2020: 2010-2020/housing/HU-EST2020_ALL.csv
      >> 2020-2023: 中間一堆state的地方按第一個 United States: CO-EST2023-HU.xlsx
-  4. [CLEANING] vacancy rate
+  4. [DONE] vacancy rate
      https://www.census.gov/housing/hvs/data/prevann.html
      裡面有homeowner vac, gross vac, year-round vac (4~5a), def見第一PDF
-     >> Table 5a.
+     >> Table 5a. (2005-)
   5. [???] median number of days property listings spend on the market (類似周轉率)
      https://www.realtor.com/research/data/ => monthly inventory => county, historical data (2016.07-)
   6. [DONE] median household income (to measure affordability)
      https://fred.stlouisfed.org/searchresults?st=county+level+median+household+income
      >> county (06037): https://fred.stlouisfed.org/series/MHICA06037A052NCEN
-  7. [CLEANING] employment rate
+  7. [DONE] unemployment rate
      https://www.bls.gov/lau/data.htm
+     >> county (48047): https://data.bls.gov/dataViewer/view/timeseries/LAUCN480470000000003#
+
+     unemployment
      >> county (48039): https://data.bls.gov/dataViewer/view/timeseries/LAUCN480390000000004
      >> state (06): https://data.bls.gov/dataViewer/view/timeseries/LASST060000000000003
+
   8. [???] 一些供給面的 (eg. construction cost, Wharton Residential Land Use Regulation Index, and land availability index?)
      >> construction: https://fred.stlouisfed.org/tags/series?t=construction%3Bprice+index => [NotThis]
       => does transportation for construction index ?? exist?
      >> WRLURI: https://real-faculty.wharton.upenn.edu/gyourko/land-use-survey/ (2006 & 2018)
-  9. [CLEANING] weather condition (有無自然災害影響 => should be some yearly binary code per county?)
+  9. [DONE] weather condition (有無自然災害影響 => should be some yearly binary code per county?)
      >> https://www.fema.gov/data-visualization/disaster-declarations-states-and-counties
 > construction company characteristics (from compustat)
 
+   10. HPI
+      >> https://www.fhfa.gov/data/hpi/datasets?tab=hpi-datasets
+
 #### Filter conditions of CoreLogic
 1.
+
+# TODO
+1. Align where the code calls data, it's chaos.
+2. Avoid commenting sections out just for producing certain file, find some way to design this.
 
 ### [Plot] Company-specific responses through house price cycles
 (幾乎都是好壞時期的比較)
 1. properties sold during good/bad time for small and large companies
 2. properties built ...
 
-
-Q會分大小，price看整個county，不分年份
-
-用有合到compustat的前後1/3，
-
-** No need to use compustat for now...
+## NOTES
+* In corelogic_seller_panel.csv, the median unit price is not the same as in the county-aggregated median unit price. In seller panel, this is really the median unit price of all properties this seller sold. But in county-aggregation, the median is actually the median of all seller's mean unit price (not median unit price) in that county.
+* In processed_data, corelogic_panel_20pct_v1, 20pct means the top was defined as top 20% (bot same logic); v1 means no year 2000, no median calculated; v2 means no year 2000 but median included; v3 means year 2000 and median both included.
