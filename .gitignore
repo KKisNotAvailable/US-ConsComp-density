@@ -5,6 +5,8 @@ NOTICE.pdf
 log/
 data/
 output/
+deed_split_2023/
+tax_split_2023/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
