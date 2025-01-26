@@ -9,6 +9,7 @@ SERVER_PATH = '/Volumes/corelogic/'
 DATA_FILE_PATH = SERVER_PATH + 'scripts/full_2023_fips_split/'
 
 DEST_FOLDER_DEED = 'deed_split_2023/'
+# DEST_FOLDER_DEED = '/Volumes/KINGSTON/CoreLogic/deed_split_2023/'
 DEST_FOLDER_TAX = 'tax_split_2023/'
 
 TAX_STR = 'university_property_basic'
@@ -38,10 +39,11 @@ def get_files_not_in_dest(get_deed: bool, get_tax: bool):
                 print(f"Deed {fname[:10]} found, starting download...", end=' ')
                 # Copy the file to the destination folder
                 shutil.copy(fpath, DEST_FOLDER_DEED)
+                print('Done!')
             elif get_tax and (TAX_STR in fname) and (fname not in tax_files_transferred):
                 print(f"Tax {fname[:10]} found, starting download...", end=' ')
                 shutil.copy(fpath, DEST_FOLDER_TAX)
-            print('Done!')
+                print('Done!')
 
     return
 
@@ -78,10 +80,15 @@ def check_file_size(check_deed: bool, check_tax: bool):
 
     if check_tax:
         for fname in os.listdir(DEST_FOLDER_TAX):
-            if fname in ignore_list:
+            if fname[0] == ".":
                 continue
-            pass
-            break
+            f1 = DEST_FOLDER_TAX + fname
+            f2 = DATA_FILE_PATH + fname
+            size1 = os.path.getsize(f1)
+            size2 = os.path.getsize(f2)
+
+            if size1 != size2:
+                print('Deed', fname[:10], 're-downloading...')
 
     return
 
@@ -106,7 +113,7 @@ def check_file_io(check_deed: bool, check_tax: bool):
             f1 = DEST_FOLDER_DEED + fname
 
             try:
-                tmp = pd.read_csv(f1, delimiter='|', dtype='str')
+                tmp = pd.read_csv(f1, sep='|', quoting=csv.QUOTE_NONE, dtype='str')
             except:
                 print(f"Error reading deed {fname[:10]}")
             finally:
@@ -223,13 +230,13 @@ def check_missing_fips(check_deed: bool, check_tax: bool):
 
 
 def main():
-    # get_files_not_in_dest(get_deed=True, get_tax=False)
+    # get_files_not_in_dest(get_deed=False, get_tax=True)
 
-    # check_file_size(check_deed=True, check_tax=False)
+    check_file_size(check_deed=False, check_tax=True)
 
     # check_file_io(check_deed=True, check_tax=False)
 
-    # deed_to_check = [
+    # deed_to_check = [  # they could not be read without quoting=csv.QUOTE_NONE
     #     '41053', '06037', '42091', '06001', '06085', '48149', '37127', '48349',
     #     '06053', '49011', '06059', '36055', '37159', '17031', '39155'
     # ]
@@ -237,7 +244,7 @@ def main():
     #     print(f"Checking FIPS {d}")
     #     check_specific_fips(fips=d, is_deed=True)  # originally 103 columns
 
-    check_missing_fips(check_deed=True, check_tax=False)
+    # check_missing_fips(check_deed=True, check_tax=False)
 
     print("All Checking Done.")
 
