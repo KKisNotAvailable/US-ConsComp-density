@@ -1,3 +1,7 @@
+'''
+This program is to do file-wise cleaning for the Corelogic files 2016 version.
+'''
+
 import pandas as pd
 import numpy as np
 import os

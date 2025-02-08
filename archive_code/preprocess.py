@@ -1,5 +1,6 @@
 '''
 This program is to deal with the huge deed and tax files.
+But no need now, we directly downloaded the split files.
 '''
 
 import pandas as pd
