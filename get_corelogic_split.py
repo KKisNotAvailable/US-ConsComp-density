@@ -8,9 +8,10 @@ from collections import Counter
 SERVER_PATH = '/Volumes/corelogic/'
 DATA_FILE_PATH = SERVER_PATH + 'scripts/full_2023_fips_split/'
 
-DEST_FOLDER_DEED = 'deed_split_2023/'
-# DEST_FOLDER_DEED = '/Volumes/KINGSTON/CoreLogic/deed_split_2023/'
-DEST_FOLDER_TAX = 'tax_split_2023/'
+# DEST_FOLDER_DEED = 'deed_split_2023/'
+DEST_FOLDER_DEED = '/Volumes/KINGSTON/CoreLogic/deed_split_2023/'
+# DEST_FOLDER_TAX = 'tax_split_2023/'
+DEST_FOLDER_TAX = '/Volumes/KINGSTON/CoreLogic/tax_split_2023/'
 
 TAX_STR = 'university_property_basic'
 DEED_STR = '_duke_university_ownertransfer'
@@ -128,8 +129,19 @@ def check_file_io(check_deed: bool, check_tax: bool):
         for fname in os.listdir(DEST_FOLDER_TAX):
             if fname[:4] != 'FIPS':
                 continue
-            pass
-            break
+            f1 = DEST_FOLDER_TAX + fname
+
+            try:
+                tmp = pd.read_csv(f1, sep='|', quoting=csv.QUOTE_NONE, dtype='str')
+            except:
+                print(f"Error reading tax {fname[:10]}")
+            finally:
+                if 'tmp' in locals():
+                    # Ensure memory is cleared
+                    del tmp
+                    gc.collect()
+
+        print("Tax file check done.")
 
     return
 
@@ -189,6 +201,7 @@ def check_missing_fips(check_deed: bool, check_tax: bool):
     all_fips = pd.read_csv('../NewCoreLogic_Codes/Data/fips2county.tsv.txt', sep='\t', dtype='str')
 
     if check_deed:
+        print("Checking Deed...")
         deed_fips_dict = {f: 0 for f in all_fips['CountyFIPS']}
 
         for fname in os.listdir(DEST_FOLDER_DEED):
@@ -216,6 +229,7 @@ def check_missing_fips(check_deed: bool, check_tax: bool):
 
 
     if check_tax:
+        print("Checking Tax...")
         tax_fips_dict = {f: 0 for f in all_fips['CountyFIPS']}
 
         for fname in os.listdir(DEST_FOLDER_TAX):
@@ -228,13 +242,21 @@ def check_missing_fips(check_deed: bool, check_tax: bool):
         print(f"There are {ctrs[-1]} FIPS files in the folder but not in the list.")
         print(f"There are {ctrs[0]} FIPS not in the folder.")
 
+        no_file, not_in_list = [], []
+        for k, v in tax_fips_dict.items():
+            if v == -1:
+                not_in_list.append(k)
+            elif v == 0:
+                no_file.append(k)
+        print("Has file but not in list:", not_in_list)
+
 
 def main():
     # get_files_not_in_dest(get_deed=False, get_tax=True)
 
-    check_file_size(check_deed=False, check_tax=True)
+    # check_file_size(check_deed=False, check_tax=True)
 
-    # check_file_io(check_deed=True, check_tax=False)
+    # check_file_io(check_deed=False, check_tax=True)
 
     # deed_to_check = [  # they could not be read without quoting=csv.QUOTE_NONE
     #     '41053', '06037', '42091', '06001', '06085', '48149', '37127', '48349',
@@ -244,7 +266,7 @@ def main():
     #     print(f"Checking FIPS {d}")
     #     check_specific_fips(fips=d, is_deed=True)  # originally 103 columns
 
-    # check_missing_fips(check_deed=True, check_tax=False)
+    check_missing_fips(check_deed=False, check_tax=True)
 
     print("All Checking Done.")
 
