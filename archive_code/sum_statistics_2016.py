@@ -93,8 +93,8 @@ def stats_vars(out_file='variable_summary_stats.csv'):
 
 
 def main():
-    pass
-    # stats_county()
+    stats_county()
+    return
     # stats_vars()
 
     data = pd.read_csv(
