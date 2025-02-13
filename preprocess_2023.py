@@ -1,9 +1,7 @@
-import dask.dataframe as dd
-import dask
-import dask.bag as db
-from dask.distributed import Client
+import pandas as pd
 import numpy as np
 import os
+import glob
 from tqdm import tqdm
 import re
 from datetime import datetime
@@ -20,9 +18,11 @@ warnings.filterwarnings("ignore")
 
 CUR_SYS  = platform.system()
 
-BULK_PATH = "F:/" if CUR_SYS == 'Windows' else '/Volumes/KINGSTON/'
-BULK_PATH += "CoreLogic/"
-BLOCKSIZE = "100MB"
+ROOT_PATH = "F:/" if CUR_SYS == 'Windows' else '/Volumes/KINGSTON/'
+DATA_PATH = ROOT_PATH + "CoreLogic/"
+CLEANED_PATH = ROOT_PATH + "Homebuilder/2023_files/cleaned_by_county/"
+
+CHUNK_SIZE = 1000000 # this for Deed files is about 500MB
 
 
 # NOTE:
@@ -30,12 +30,8 @@ BLOCKSIZE = "100MB"
 
 class Preprocess():
     def __init__(
-            self, log_name: str = "", log_path: str = "./log/", out_path: str = './output/',
-            bulk_deed: str = "duke_university_ownertransfer_v3_dpc_01465911_20230803_072211_data.txt",
-            bulk_tax: str = "duke_university_property_basic2_dpc_01465909_20230803_072103_data.txt"
+            self, log_name: str = "", log_path: str = "./log/", out_path: str = './output/'
         ) -> None:
-        self.bulk_deed = f"{BULK_PATH}{bulk_deed}"
-        self.bulk_tax = f"{BULK_PATH}{bulk_tax}"
         self.__log_file = log_path + log_name
         self.__out_path = out_path
 
@@ -55,32 +51,7 @@ class Preprocess():
         with open(self.__log_file, 'a') as f:
             f.write(f"{message}\n")
 
-
-    def split_file(self, which_file: str):
-        '''
-
-        '''
-        filename = self.bulk_deed if which_file.lower() == 'deed' else self.bulk_tax
-
-        # ddf = dd.read_csv(
-        #     filename, blocksize='1GB',
-        #     header=None, sep='\n', engine='python',
-        #     on_bad_lines='skip', quoting=csv.QUOTE_NONE
-        # )
-        # split to 1GB files and save. TODO: might also want this to be argument
-        dask_bag = db.read_text(
-            filename, blocksize='300MB', encoding='utf-8', errors='ignore'
-        )
-
-        # Save each partition to separate files
-        # TODO: should add an argument: dest
-        dask_bag.to_textfiles('/Volumes/KINGSTON/CoreLogic/deed_2023/deed_2023_part_*.txt')
-
-        # Split and save each partition to a new file
-        # for i, partition in enumerate(ddf.to_delayed()):
-        #     partition.compute().to_csv(f'/Volumes/KINGSTON/CoreLogic/deed_2023/deed_2023_{i+1:04d}.txt', index=False, header=False)
-
-    def deed_filter(self, data):
+    def __deed_filter(self, data) -> pd.DataFrame:
         '''
         This largely follows Jaimie's (jaimie.choi@duke.edu) NewClean.py
             > remove Non-Arms Length (interfamily)
@@ -95,6 +66,15 @@ class Preprocess():
         ------
             filtered data, same data type as the input.
         '''
+        # Ignore the rows without valid date data
+        data['SALE_DATE'] = data['SALE_DERIVED_DATE']\
+            .where(data['SALE_DERIVED_DATE'] != '0', data['SALE_DERIVED_RECORDING_DATE'])
+        # drop NA and '0' in the end
+        data = data.dropna(subset=['SALE_DATE'])
+        data = data[data['SALE_DATE'] != '0']
+
+        data = data.drop(columns=['SALE_DERIVED_DATE', 'SALE_DERIVED_RECORDING_DATE'])
+
         # Remove Non-Arms Length Transactions
         data = data[data['INTERFAMILY_RELATED_IND'] == '0']
         # A: 'Arms Length Transaction', B-C: 'Non Arms Length' (pri-cat-code in old codebook)
@@ -154,19 +134,20 @@ class Preprocess():
 
         return data
 
-    def deed_clean(
-        self, filename: str,
-        save_file: bool = False,
-        outfile = 'deed_cleaned'
-    ):
+    def single_deed_clean(self, fpath: str) -> pd.DataFrame:
         '''
-        Assume in this function can handle all the column thing...
+        For each fips file, this function first do the column name cleaning,
+        and then apply the __deed_filter() to the data.
+        Notice that we read each file in chunks, because some of the files
+        are over 1GB and up to 6GB, processing the whole file at once might
+        be an overly intense task for memory.
         '''
         data_type_spec = {
             'CLIP': 'str', # 1006407533
+            'FIPS CODE': 'category',
+            "APN (PARCEL NUMBER UNFORMATTED)": 'str',  # some of the fips has no CLIP in certain years, need to use this to merge
             'LAND USE CODE - STATIC': 'category',
             'MOBILE HOME INDICATOR': 'category',
-            'TRANSACTION FIPS CODE': 'category',
             'SALE AMOUNT': 'float64',
             'SALE DERIVED DATE': 'str', # 20210908
             'SALE DERIVED RECORDING DATE': 'str',
@@ -181,100 +162,174 @@ class Preprocess():
             'BUYER 1 FULL NAME': 'str',
             'SELLER 1 FULL NAME': 'str'
         }
-
-        # TODO: read the file for setting header
-        # Check if the file has header, if not then get header file and
-        # attach to the first row
-        # OR I JUST MANUALLY DO THIS??
-        # ** might need to read file twice, first for checking if header exist
-        #    the second time do the real process thing.
-
-        # [AFTER SPLITTING] first need to check if each file could be opened.
-
-        # planned second open
-        ddf = dd.read_csv(
-            filename, delimiter="|", blocksize=BLOCKSIZE,
+        to_cat = []
+        for chunk in pd.read_csv(
+            fpath, delimiter="|",
+            chunksize=CHUNK_SIZE, # can only work with engine = c or python
             usecols=data_type_spec.keys(), dtype=data_type_spec,
-            on_bad_lines='skip', quoting=csv.QUOTE_NONE
-        )
+            on_bad_lines='skip', # skip the bad rows for now, guess there won't be many (cannot check tho)
+            # engine='c',
+            quoting=csv.QUOTE_NONE
+        ):
+            # Make column names more readable
+            old_col = chunk.columns
+            new_col = [
+                s.replace(r' - STATIC','').replace('INDICATOR','IND')
+                for s in old_col
+            ]
+            new_col = ['_'.join(s.split()) for s in new_col]
+            chunk = chunk.rename(columns=dict(zip(old_col, new_col)))
+            chunk.rename(columns={"APN_(PARCEL_NUMBER_UNFORMATTED)": 'APN'}, inplace=True)
 
-        old_col = ddf.columns
-        new_col = [
-            s\
-                .replace(r' - STATIC','')\
-                .replace('DEED SITUS ','')\
-                .replace('INDICATOR','IND')\
-                .replace('CORPORATE','CORP')
-            for s in old_col
-        ]
-        new_col = ['_'.join(s.split()) for s in new_col]
-        ddf = ddf.rename(columns=dict(zip(old_col, new_col)))
+            data = self.__deed_filter(chunk)
 
-        # In this version, CLIP can identify unique property
-        # I saw some of the buyer 1 full name includes name of buyer 1 and 2
-        keep_cols = [
-            'CLIP', 'LAND_USE_CODE', 'TRANSACTION_FIPS_CODE', 'SALE_AMOUNT',
-            'SALE_DERIVED_DATE', 'SALE_DERIVED_RECORDING_DATE',
-            'PRIMARY_CATEGORY_CODE', 'DEED_CATEGORY_TYPE_CODE',
-            'INTERFAMILY_RELATED_IND', 'RESALE_IND', 'NEW_CONSTRUCTION_IND',
-            'SHORT_SALE_IND', 'FORECLOSURE_REO_IND', 'FORECLOSURE_REO_SALE_IND',
-            'MOBILE_HOME_IND',
-            'BUYER_1_FULL_NAME', 'SELLER_1_FULL_NAME'
-        ]
+            to_cat.append(data)
 
-        # ddf = ddf[keep_cols] # might not need this, since we already does this when reading csv
+        cleaned_fips = pd.concat(to_cat, ignore_index=True)
 
-        # ========================
-        #  Make SALE_DATE & Clean
-        # ========================
-        # Date: SALE_DERIVED_DATE, if '0' then SALE_DERIVED_RECORDING_DATE
-        ddf['SALE_DATE'] = ddf['SALE_DERIVED_DATE']\
-            .where(ddf['SALE_DERIVED_DATE'] != '0', ddf['SALE_DERIVED_RECORDING_DATE'])
-        # drop NA and '0' in the end
-        ddf = ddf.dropna(subset=['SALE_DATE'])
-        ddf = ddf[ddf['SALE_DATE'] != '0']
+        return cleaned_fips
 
-        ddf = ddf.drop(columns=['SALE_DERIVED_DATE', 'SALE_DERIVED_RECORDING_DATE'])
-
-        # ==================
-        #  Do the filtering
-        # ==================
-        # Convert columns to numeric types, coercing errors to NaN
-        # ddf['SALE_AMOUNT'] = dd.to_numeric(ddf['SALE_AMOUNT'], errors='coerce')
-
-        ddf = self.deed_filter(ddf)
-
-        # only 'CLIP', 'LAND_USE_CODE', 'TRANSACTION_FIPS_CODE', 'SALE_AMOUNT', 'DATE',
-        # 'BUYER_1_FULL_NAME', 'SELLER_1_FULL_NAME' left
-
-        if save_file:
-            ddf.to_csv(self.__out_path+f'{outfile}_*.csv', single_file=True)
-        else:
-            return ddf.compute()
-
-    def batch_process(self, inpath: str, outpath = ""):
+    def single_tax_clean(self, fpath: str) -> pd.DataFrame:
         '''
-
+        This function filters only columns but not rows. We only need the basic
+        information of the properties, such as number of bedrooms and living
+        area square feet.
         '''
-        save_file = True if outpath else False
+        data_type_spec = {
+            "CLIP": 'str', # 1006407533
+            # "FIPS CODE": 'category',
+            "APN (PARCEL NUMBER UNFORMATTED)": 'str',  # some of the fips has no CLIP in certain years, need to use this to merge
+            "YEAR BUILT": 'category',
+            "BEDROOMS - ALL BUILDINGS": 'float64',
+            "TOTAL ROOMS - ALL BUILDINGS": 'float64',
+            "TOTAL BATHROOMS - ALL BUILDINGS": 'float64',
+            "NUMBER OF BATHROOMS": 'float64',
+            "NUMBER OF UNITS": 'float64',
+            "UNIVERSAL BUILDING SQUARE FEET": 'float64',
+            "UNIVERSAL BUILDING SQUARE FEET SOURCE INDICATOR CODE": 'category',  # A: Adjusted, B: Total, D: Ground floor, G: Gross, L: Living, M: Base/Main
+            "BUILDING SQUARE FEET": 'float64',
+            "LIVING SQUARE FEET - ALL BUILDINGS": 'float64',
+            "BUILDING GROSS SQUARE FEET": 'float64',
+            "ADJUSTED GROSS SQUARE FEET": 'float64',
+        }
+        to_cat = []
+        for chunk in pd.read_csv(
+            fpath, delimiter="|",
+            chunksize=CHUNK_SIZE,
+            on_bad_lines='skip',
+            usecols=data_type_spec.keys(), dtype=data_type_spec,
+            quoting=csv.QUOTE_NONE
+        ):
+            old_col = chunk.columns
+            new_col = [
+                s.replace(' -','').replace('SQUARE FEET', 'SQ FT')
+                for s in old_col]
+            new_col = ['_'.join(s.split()) for s in new_col]
+            chunk.rename(columns=dict(zip(old_col, new_col)), inplace=True)
+            chunk.rename(columns={"APN_(PARCEL_NUMBER_UNFORMATTED)": 'APN'}, inplace=True)
 
-        to_cat = [] # only works if no outpath specified
-        # 1. for each file in the path, do deed_clean
-        for filename in os.listdir(path=inpath):
-            if filename.endswith('.txt'):
-                file_path = os.path.join(inpath, filename)
+            to_cat.append(chunk)
 
-                # 2. the out name should follow the input filename
-                #    plus, which path is it going to be saved to
-                outname = outpath + 'deed_cleaned'
-                to_cat.append(self.deed_clean(
-                    filename, save_file=save_file, outfile=outname))
+        cleaned_tax = pd.concat(to_cat, ignore_index=True)
+
+        return cleaned_tax
+
+    def merge_n_save_by_fips(self, deed_path, tax_path, out_path):
+        '''
+        This function will read the deed and tax file, clean them, and then
+        merge deed and tax.
+        Notice that some of the records does not have CLIP, for those we use
+        APN to merge. For records that has neither CLIP not APN, we ignore them.
+        (only a few has no CLIP)
+
+        Parameters
+        ----------
+        deed_path: str.
+            the folder path of deed files.
+        tax_path: str.
+            the folder path of tax files.
+        out_path: str.
+            the folder path for merged files.
+
+        Return
+        ------
+            merged deed and tax dataframe.
+        '''
+        # These are the fips I found in the data folder but not in the fips2county list (ignoring fips above 56XXX)
+        updated_fips = {  # old: new
+            "02232": '02230',  # SKAGWAY (same name)
+            "02261": '02063',  # VALDEX-CORDOVA -> CHUGACH
+            "02280": '02195',  # WRANGELL-PETERSBURG -> PETERSBURG (no clear info about this change, so assign this to Petersburg based on higher population)
+            "12025": '12086'   # DADE -> MIAMI-DADE
+        }
+        for deed_fname in os.listdir(deed_path):
+            if deed_fname[:4] != "FIPS":
+                continue
+
+            cur_fips = deed_fname[5:10]
+            deed_fpath = os.path.join(deed_path, deed_fname)
+            deed_data = self.single_deed_clean(deed_fpath)
+
+            # find the corresponding tax file
+            # file_list = glob.glob(os.path.join(tax_path, f"FIPS_{cur_fips}*.txt"))
+
+            # if file_list:
+            #     tax_fpath = file_list[0]  # Select the first matching file
+
+            tax_fname = f'FIPS_{cur_fips}_duke_university_property_basic2_dpc_01465909_20230803_072103_data.txt'
+            tax_fpath = os.path.join(tax_path, tax_fname)
+
+            # check if the fips is in tax_path
+            if not os.path.exists(tax_fpath):
+                print(f"{cur_fips} has no tax file.")
+                print(cur_fips, "=>", os.path.getsize(deed_fpath) // (1024 * 1024), "MB")
+                continue
+
+            tax_data = self.single_tax_clean(tax_fpath)
+
+            # Divide both deed and tax into:
+            # (1) with CLIP
+            cond_deed_clip = deed_data['CLIP'].notna()
+            deed_clip = deed_data[cond_deed_clip].drop(columns=['APN'])
+            cond_tax_clip = tax_data['CLIP'].notna()
+            tax_clip = tax_data[cond_tax_clip].drop(columns=['APN'])
+
+            # (2) without CLIP (having NA values) but with APN (unformatted)
+            cond_deed_apn = deed_data['APN'].notna()
+            deed_apn = deed_data[(~cond_deed_clip) & cond_deed_apn].drop(columns=['CLIP'])
+            cond_tax_apn = tax_data['APN'].notna()
+            tax_apn = tax_data[(~cond_tax_clip) & cond_tax_apn].drop(columns=['CLIP'])
+
+            # (3) with neither CLIP nor APN
+            deed_remaining = deed_data[(~cond_deed_clip) & (~cond_deed_apn)]
+            tax_remaining = tax_data[(~cond_tax_clip) & (~cond_tax_apn)]
+
+            # print(deed_remaining.shape)
+            # print(tax_remaining.shape)
+
+            # for 1, use CLIP to merge; for 2, use APN; and for 3, filter them out (but check how many of them)
+            by_clip = deed_clip.merge(tax_clip, on='CLIP', how='left')
+            by_apn = deed_apn.merge(tax_apn, on='APN', how='left')
+
+            out_data = pd.concat([by_clip, by_apn], ignore_index=True)
+
+            # if the FIPS is in the update list, change both the filename and
+            # the record in the data.
+            cur_fips = updated_fips.get(cur_fips, cur_fips)
+            out_data['FIPS_CODE'] = cur_fips
+
+            out_fpath = f"{out_path}FIPS_{cur_fips}_merged.txt"
+            out_data.to_csv(out_fpath, index=False)
+
+            break
+
+        return
 
     def _deed_check(self, cleaned_deed):
         '''
         This function is to do some simple analysis on the cleaned deed file.
         '''
-        ddf = dd.read_csv("")
+        data = pd.read_csv(cleaned_deed)
 
         # the following columns need to be checked for dist. after filtering
         to_check = [
@@ -282,8 +337,8 @@ class Preprocess():
         ]
 
         # 1. check non NA amount
-        row_cnt = ddf['CLIP'].shape[0].compute()
-        good_counts = ddf[to_check].count().compute()
+        row_cnt = data['CLIP'].shape[0]
+        good_counts = data[to_check].count()
         print("Non NA pct for ...")
         for i, c in enumerate(to_check):
             print(f"  {c:<11}: {good_counts.iloc[i]*100/row_cnt:>10.5f}%")
@@ -292,88 +347,19 @@ class Preprocess():
         for c in to_check:
             if c != 'SALE_AMOUNT':
                 print(f'Now checking {c}')
-                print(ddf[c].value_counts()) # exclude NA automatically
+                print(data[c].value_counts()) # exclude NA automatically
 
-    def just_checking(self, file_type: str):
-        '''
-
-        Parameters
-        ----------
-        file_type: str
-            can only be "deed" or "tax"
-        '''
-        cur_file = self.bulk_deed if file_type.lower() == 'deed' else self.bulk_tax
-        ddf = dd.read_csv(cur_file, delimiter="|", dtype='str', on_bad_lines='skip')
-
-        # =======================================
-        #  Save a small dataset for clearer view
-        # =======================================
-        # top_n = 100
-        # tmp = ddf.head(top_n)
-        # tmp.to_csv(f"./log/{cur_file}_2023_first{top_n}.txt", index=False)
-
-        # =====================
-        #  Basic checking Deed
-        # =====================
-        # cols_to_check = [
-        #     'PROPERTY INDICATOR CODE - STATIC',
-        #     'MULTI OR SPLIT PARCEL CODE',
-        #     'PRIMARY CATEGORY CODE',
-        #     'DEED CATEGORY TYPE CODE',
-        #     'RECORD ACTION INDICATOR'
-        # ]
-        # for c in cols_to_check:
-        #     print(f"==> Current col: {c}")
-        #     print(ddf[c].value_counts(dropna=False)) # counting include NA
-
-        # ttl_rows = ddf['FIPS'].shape[0].compute() # but why len(ddf['FIPS']) won't work?
-        # print(ttl_rows)
-
-        return
 
 def main():
-    dask.config.set({'distributed.worker.memory.spill': True})
-
-    # to speed up the Dask computation
-    if CUR_SYS == 'Darwin':
-        # Configure client settings for local computation:
-        #    number of machines, core, half of memory
-        print("Now on Mac!")
-        client = Client(n_workers=1, threads_per_worker=8, memory_limit='10GB')
-    else:
-        client = Client(n_workers=1, threads_per_worker=2, memory_limit='4GB')
-
-
-    # print(client.dashboard_link)
-
     current_date = datetime.now().strftime("%m%d")
     log = f'data_process.log'
 
     p = Preprocess()
 
-    # p.just_checking()
+    deed_folder = f"{DATA_PATH}deed_split_2023/"
+    tax_folder = f"{DATA_PATH}tax_split_2023/"
 
-    # ======================
-    #  Break the large file
-    # ======================
-    p.split_file(which_file='deed')
-
-    # ========================
-    #  Process splitted files
-    # ========================
-    # if outpath specified, the cleaned files would be saved to that dir
-    p.batch_process(BULK_PATH+'deed_2023', outpath=BULK_PATH+'deed_2023_cleaned')
-
-    # ===================
-    #  Filter Bulk Files
-    # ===================
-    # [avoid run this unless your CPU is more than 8 cores and memory is larger than 64GB]
-    # p.deed_clean(filename=p.bulk_deed, save_file=True)
-
-    client.close()
-
-    # Records
-    # died on 186265
+    p.merge_n_save_by_fips(deed_folder, tax_folder, CLEANED_PATH)
 
     print("Done!!")
 
