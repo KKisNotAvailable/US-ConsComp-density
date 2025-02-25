@@ -8,16 +8,19 @@ from collections import Counter
 SERVER_PATH = '/Volumes/corelogic/'
 DATA_FILE_PATH = SERVER_PATH + 'scripts/full_2023_fips_split/'
 
-# DEST_FOLDER_DEED = 'deed_split_2023/'
-DEST_FOLDER_DEED = '/Volumes/KINGSTON/CoreLogic/deed_split_2023/'
-# DEST_FOLDER_TAX = 'tax_split_2023/'
-DEST_FOLDER_TAX = '/Volumes/KINGSTON/CoreLogic/tax_split_2023/'
+DEST_FOLDER_DEED = 'output/'  # just for not reporting error
+# DEST_FOLDER_DEED = '/Volumes/KINGSTON/CoreLogic/deed_split_2023/'
+DEST_FOLDER_TAX = 'output/'  # just for not reporting error
+# DEST_FOLDER_TAX = '/Volumes/KINGSTON/CoreLogic/tax_split_2023/'
+DEST_FOLDER_HIST_TAX_TEMP = 'output/historical_tax_split/'  # download to here and then move to _FINAL
+DEST_FOLDER_HIST_TAX_FINAL = '/Volumes/KINGSTON/CoreLogic/hist_tax_split_2023/'
 
 TAX_STR = 'university_property_basic'
 DEED_STR = '_duke_university_ownertransfer'
+HIST_TAX_STR = 'university_hist_property_basic'
 
 
-def get_files_not_in_dest(get_deed: bool, get_tax: bool):
+def get_files_not_in_dest(get_deed=False, get_tax=False, get_hist_tax=False):
     '''
     This function will get the files from the source folder if the file name
     does not exist in the destination folder.
@@ -31,6 +34,7 @@ def get_files_not_in_dest(get_deed: bool, get_tax: bool):
     '''
     deed_files_transferred = os.listdir(DEST_FOLDER_DEED)
     tax_files_transferred = os.listdir(DEST_FOLDER_TAX)
+    hist_tax_files_transferred = os.listdir(DEST_FOLDER_HIST_TAX_FINAL)
 
     for fname in os.listdir(DATA_FILE_PATH):
         fpath = os.path.join(DATA_FILE_PATH, fname)
@@ -45,11 +49,15 @@ def get_files_not_in_dest(get_deed: bool, get_tax: bool):
                 print(f"Tax {fname[:10]} found, starting download...", end=' ')
                 shutil.copy(fpath, DEST_FOLDER_TAX)
                 print('Done!')
+            elif get_hist_tax and (HIST_TAX_STR in fname) and (fname not in hist_tax_files_transferred):
+                print(f"Historical Tax {fname[:10]} found, starting download...", end=' ')
+                shutil.copy(fpath, DEST_FOLDER_HIST_TAX_TEMP)
+                print('Done!')
 
     return
 
 
-def check_file_size(check_deed: bool, check_tax: bool):
+def check_file_size(check_deed: bool, check_tax: bool, check_hist_tax: bool):
     '''
     Compare the downloaded files in the destination folder with the source
     folder for the file size consistency. If a certain file's size is not
@@ -73,9 +81,7 @@ def check_file_size(check_deed: bool, check_tax: bool):
             size2 = os.path.getsize(f2)
 
             if size1 != size2:
-                print('Deed', fname[:10], 're-downloading...')
-
-                break
+                print('Deed', fname[:10], 'need re-download...')
 
         print("All deed files have matching size!")
 
@@ -89,12 +95,26 @@ def check_file_size(check_deed: bool, check_tax: bool):
             size2 = os.path.getsize(f2)
 
             if size1 != size2:
-                print('Deed', fname[:10], 're-downloading...')
+                print('Tax', fname[:10], 'need re-download...')
+
+    if check_hist_tax:
+        for fname in os.listdir(DEST_FOLDER_HIST_TAX_FINAL):
+            if fname[0] == ".":
+                continue
+            f1 = DEST_FOLDER_HIST_TAX_FINAL + fname
+            f2 = DATA_FILE_PATH + fname
+            size1 = os.path.getsize(f1)
+            size2 = os.path.getsize(f2)
+
+            if size1 != size2:
+                # since there are multiple files for a FIPS, we need the full
+                # name to locate the exact file.
+                print('Hist Tax', fname, 'need re-download...')
 
     return
 
 
-def check_file_io(check_deed: bool, check_tax: bool):
+def check_file_io(check_deed: bool, check_tax: bool, check_hist_tax: bool):
     '''
     Check if the downloaded files could be correctly read by python.
     The assumption is: if the files were not intact, there should be multiple
@@ -142,6 +162,24 @@ def check_file_io(check_deed: bool, check_tax: bool):
                     gc.collect()
 
         print("Tax file check done.")
+
+    if check_hist_tax:
+        for fname in os.listdir(DEST_FOLDER_HIST_TAX_FINAL):
+            if fname[:4] != 'FIPS':
+                continue
+            f1 = DEST_FOLDER_HIST_TAX_FINAL + fname
+
+            try:
+                tmp = pd.read_csv(f1, sep='|', quoting=csv.QUOTE_NONE, dtype='str')
+            except:
+                print(f"Error reading hist tax {fname}")
+            finally:
+                if 'tmp' in locals():
+                    # Ensure memory is cleared
+                    del tmp
+                    gc.collect()
+
+        print("Hist Tax file check done.")
 
     return
 
@@ -252,11 +290,11 @@ def check_missing_fips(check_deed: bool, check_tax: bool):
 
 
 def main():
-    # get_files_not_in_dest(get_deed=False, get_tax=True)
+    # get_files_not_in_dest(get_deed=False, get_tax=False, get_hist_tax=True)
 
-    # check_file_size(check_deed=False, check_tax=True)
+    # check_file_size(check_deed=False, check_tax=False, check_hist_tax=True)
 
-    # check_file_io(check_deed=False, check_tax=True)
+    check_file_io(check_deed=False, check_tax=False, check_hist_tax=True)
 
     # deed_to_check = [  # they could not be read without quoting=csv.QUOTE_NONE
     #     '41053', '06037', '42091', '06001', '06085', '48149', '37127', '48349',
@@ -266,7 +304,7 @@ def main():
     #     print(f"Checking FIPS {d}")
     #     check_specific_fips(fips=d, is_deed=True)  # originally 103 columns
 
-    check_missing_fips(check_deed=False, check_tax=True)
+    # check_missing_fips(check_deed=False, check_tax=True)
 
     print("All Checking Done.")
 
