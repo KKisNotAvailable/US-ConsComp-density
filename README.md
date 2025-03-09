@@ -1,5 +1,33 @@
-# US-ConsComp-density
+# US-Homebuilder-Concentration
 
+## Introduction
+This is the repo for paper "Homebuilder concentration and housing market dynamics".
+
+## Development Log
+1. We originally plan to merge Deed and Tax files on CLIP, and for those entries without CLIP, we will use APN. However, after a second thought, we will first fill the missing CLIPs for those entries with only APN, and the merge the files. Here is why. Consider the following case:
+|Deed|CLIP|APN|Tax|CLIP|APN|
+|-|-|-|-|-|-|
+||123|ABC||123|ABC|
+||-|ABC||-|ABC|
+The first record would be merged using CLIP and the second record would use APN as key to merge, and the result would be
+|Merged|CLIP|APN|
+|-|-|-|
+||123|ABC|
+||-|ABC|
+The problem is, when we merge Deed with Tax, we need to find the tax data with the assessment year closest to the transaction year in deed data. In our example, although the two records are both indicating the same property (since they have the same APN), their assessment years were not compared before merging. Therefore, for deed, the first record did not consider the second record in tax, because the tax data does not have CLIP. Similarly, the second record in deed did not consider the first record in tax, because this deed record does not have a CLIP.
+
+As a result, we need to fill CLIPs to those records having only APN in both Deed and Tax. In "preprocess_2023.py," CheckData.clip_apn_bijection() is used to check if CLIP and APN are actually bijective. Then this filling operations are in Preprocess.single_deed_clean, single_tax_clean, and hist_tax_clean.
+
+<!-- Deed only need to fill the CLIP, but Tax need to fill both CLIP and APN -->
+
+2. <!-- This part is not done--> In the historical tax files, from the file names, we can know the approximate assessment year. For example, FIPS_01001_duke_university_hist_property_basic1_dpc_01465913_02_20230803_084057_data, the "02" before "20230803" is the serial number for this file. "02" means the assessment year is 2020. We mentioned this is "approximate" is because...
+Also, we found that in the tax files, "TAX YEAR" and "ASSESS YEAR" represent the same thing, while sometimes one of them might be missing values.
+
+Although in the tax files, there are SALE DATE, there's no such columns in the historical tax file. Plus, we think using the closest assess year should also reflect the property's status on transaction, we align TAX and HIST TAX and use ASSESS YEAR to merge with DEED.
+
+3. There are no "UNIVERSAL BUILDING SQUARE FEET SOURCE INDICATOR CODE" in historical tax.
+
+<!--
 ## Empirical Analysis
 ### Descriptive Analysis
 #### Numerical
@@ -86,3 +114,4 @@ city to county FIPS mapping: https://www.census.gov/library/reference/code-lists
 ## NOTES
 * In corelogic_seller_panel.csv, the median unit price is not the same as in the county-aggregated median unit price. In seller panel, this is really the median unit price of all properties this seller sold. But in county-aggregation, the median is actually the median of all seller's mean unit price (not median unit price) in that county.
 * In processed_data, corelogic_panel_20pct_v1, 20pct means the top was defined as top 20% (bot same logic); v1 means no year 2000, no median calculated; v2 means no year 2000 but median included; v3 means year 2000 and median both included.
+-->
