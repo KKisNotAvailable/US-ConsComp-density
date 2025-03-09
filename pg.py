@@ -117,44 +117,61 @@ def clean_firm_names(data):
 
     return data
 
-types_spec = {
-    "SELLER_NAME1": 'str',
-    "SALE_AMOUNT": 'str',
-    "PROPERTY_INDICATOR": 'category',
-    "RESALE/NEW_CONSTRUCTION": 'category' # M: re-sale, N: new construction
-}
+def old_tests():
+    types_spec = {
+        "SELLER_NAME1": 'str',
+        "SALE_AMOUNT": 'str',
+        "PROPERTY_INDICATOR": 'category',
+        "RESALE/NEW_CONSTRUCTION": 'category' # M: re-sale, N: new construction
+    }
 
-df = pd.read_csv(
-    f"{COUNTY_FILE_PATH}05069.csv",
-    usecols=types_spec.keys(),
-    dtype=types_spec
-)
+    df = pd.read_csv(
+        f"{COUNTY_FILE_PATH}05069.csv",
+        usecols=types_spec.keys(),
+        dtype=types_spec
+    )
 
-df = df[df['RESALE/NEW_CONSTRUCTION'] == 'N']
+    df = df[df['RESALE/NEW_CONSTRUCTION'] == 'N']
 
-df[COL_SALE_AMT] = pd.to_numeric(df[COL_SALE_AMT], errors='coerce')
+    df[COL_SALE_AMT] = pd.to_numeric(df[COL_SALE_AMT], errors='coerce')
 
-df = clean_firm_names(df)
+    df = clean_firm_names(df)
 
-grouped_df = df.groupby(COL_SELLER).agg(
-    SALE_AMOUNT=(COL_SALE_AMT, 'sum'),
-    CASE_CNT=(COL_SELLER, 'count')
-).reset_index()
+    grouped_df = df.groupby(COL_SELLER).agg(
+        SALE_AMOUNT=(COL_SALE_AMT, 'sum'),
+        CASE_CNT=(COL_SELLER, 'count')
+    ).reset_index()
 
-print(grouped_df)
+    print(grouped_df)
 
-# 1. Get total case count (or simply df.shape[0] works)
-ttl_case_cnt = sum(grouped_df[COL_CASE_CNT])
+    # 1. Get total case count (or simply df.shape[0] works)
+    ttl_case_cnt = sum(grouped_df[COL_CASE_CNT])
 
-# 2. HHI = sum((x_i/X)^2), notice the base is top 50
-TOP_N = 50
-hhi = grouped_df[COL_SALE_AMT].nlargest(TOP_N) / \
-    grouped_df[COL_SALE_AMT].sum()
+    # 2. HHI = sum((x_i/X)^2), notice the base is top 50
+    TOP_N = 50
+    hhi = grouped_df[COL_SALE_AMT].nlargest(TOP_N) / \
+        grouped_df[COL_SALE_AMT].sum()
 
-hhi = hhi ** 2
-hhi = sum(hhi)
+    hhi = hhi ** 2
+    hhi = sum(hhi)
 
-print(hhi)
+    print(hhi)
+
+def test_clip_apn_fill():
+    # Sample DataFrame
+    df = pd.DataFrame({
+        'A': [None, 'X1', 'Y2', 'X2', 'X3', None, 'X2'],
+        'B': ['B1', 'B1', 'B2', 'B2', 'B3', 'B3', 'B2']
+    })
+
+    # Fill missing values in column A based on B
+    df['A'] = df['A'].fillna(df.groupby('B')['A'].transform('first'))
+
+    print(df)
+
+
+if __name__ == "__main__":
+    test_clip_apn_fill()
 
 # class Analysis():
 #     def __init__(self, out_path: str) -> None:
