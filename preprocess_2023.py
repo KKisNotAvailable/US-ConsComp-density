@@ -9,6 +9,7 @@ import platform
 import time
 import csv
 from typing import Tuple
+import data_in_dict as data_dicts
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -21,12 +22,13 @@ CUR_SYS  = platform.system()
 
 ROOT_PATH = "F:/" if CUR_SYS == 'Windows' else '/Volumes/KINGSTON/'
 DATA_PATH = ROOT_PATH + "CoreLogic/"
-CLEANED_PATH = "./output/cleaned_by_county/"
 
 DEED_FOLDER = DATA_PATH + "deed_split_2023/"
 TAX_FOLDER = DATA_PATH + "tax_split_2023/"
 HIST_TAX_FOLDER = DATA_PATH + "hist_tax_split_2023/"
 
+TEMP_PATH = "./output/"
+CLEANED_PATH = TEMP_PATH + "cleaned_by_county/"
 
 CHUNK_SIZE = 1000000 # this for Deed files is about 500MB
 
@@ -74,10 +76,10 @@ class Utils():
         idx = hist_tax_fname.find("202308")
         return hist_tax_fname[idx-3:idx-1]
 
-    def tax_file_fullname(self, fips) -> str:
+    def tax_file_fullname(self, fips: str) -> str:
         return f"FIPS_{fips}_duke_university_property_basic2_dpc_01465909_20230803_072103_data.txt"
 
-    def deed_file_fullname(self, fips) -> str:
+    def deed_file_fullname(self, fips: str) -> str:
         return f"FIPS_{fips}_duke_university_ownertransfer_v3_dpc_01465911_20230803_072211_data.txt"
 
 
@@ -434,6 +436,37 @@ class CheckData():
 
         print(f"The assessed year range in {checking_what} is {cur_min}~{cur_max}.")
 
+    def bulkcheck_deed_company_name(self, data_spec: dict, out_fpath):
+        '''
+        This function collect all seller names for analysis.
+        '''
+        cur_path = self.data_paths['deed']
+        to_cat = []
+
+        for fname in tqdm(os.listdir(cur_path), desc="Bulk checking firm names"):
+            if fname[:4] != "FIPS":
+                continue
+
+            fpath = os.path.join(cur_path, fname)
+            cur_file = pd.read_csv(
+                fpath, delimiter="|", usecols=data_spec.keys(), dtype=data_spec,
+                on_bad_lines='skip', quoting=csv.QUOTE_NONE
+            )
+
+            # some preprocess
+            cur_file = cur_file[~((cur_file['NEW CONSTRUCTION INDICATOR'] == '0') & (cur_file['RESALE INDICATOR'] == '0'))]
+            cur_file = cur_file.assign(NEW_HOME_ORIG=(cur_file['NEW CONSTRUCTION INDICATOR'] == '1') & (cur_file['RESALE INDICATOR'] == '0'))
+
+            # do the name list
+            cur_file = cur_file.loc[cur_file['NEW_HOME_ORIG'] == True]
+            cur_name_cnt = cur_file.groupby('SELLER 1 FULL NAME').size().reset_index(name='Count')
+            to_cat.append(cur_name_cnt)
+
+        name_cnt = pd.concat(to_cat, ignore_index=True)
+        name_cnt = name_cnt.groupby('SELLER 1 FULL NAME', as_index=False)['Count'].sum()
+        name_cnt.to_csv(out_fpath, index=False)
+
+
 class Preprocess():
     def __init__(
             self, deed_path, tax_path, hist_tax_path, log_name="",
@@ -464,12 +497,81 @@ class Preprocess():
         with open(self.__log_file, 'a') as f:
             f.write(f"{message}\n")
 
+    def __clean_firm_name(self, data: pd.DataFrame) -> pd.DataFrame:
+        '''
+        This function aims at cleaning the construction firm names, so will be
+        working on the seller name column in the deed files.
+        Notice that we could not really differentiate names between companies
+        and individuals, so we just process the strings as if they were company
+        names.
+        This function first do genral cleaning for the names, work on
+        the identified builders, and finally do the name cleaning for other
+        builders.
+        '''
+        # Make a copy of the data: only for new constructions
+        drop_cond = (data['NEW_HOME_ORIG'] == True) & \
+                    (data['SELLER_1_FULL_NAME'].isna())
+        working_data = data[~drop_cond]
+
+        # 1. General cleaning (based on the >=100-count list from data)
+        # remove all ,, (, ), ", ', *, ., /, #, $
+        working_data['SELLER_1_FULL_NAME'] = working_data['SELLER_1_FULL_NAME']\
+            .str.replace(r'[,\(\)\"\'\*\./#\$\\]', '', regex=True)
+        # replace all dashes with space, and remove leading and trailing spaces
+        working_data['SELLER_1_FULL_NAME'] = working_data['SELLER_1_FULL_NAME']\
+            .str.replace('-', ' ', regex=False).str.strip()
+        # delete rows if starts with "&", "%", "!"
+        cond_wierd_start = working_data["SELLER_1_FULL_NAME"]\
+            .str.contains(r"^[!&%]", na=False)
+        working_data = working_data[~cond_wierd_start]
+
+        # 2. Identified names (based on top builder list)
+        pattern_name_list = data_dicts.builders_list
+        conditions = [
+            working_data['SELLER_1_FULL_NAME'].str.contains(pattern, na=False)
+            for pattern, _ in pattern_name_list
+        ]
+        choices = [label for _, label in pattern_name_list]
+
+        working_data['BUILDER_IDENTIFIED'] = np.select(
+            conditions, choices, default='OTHER')
+
+        # 3. Names for grouping
+        working_data['BLDR_CLEANED'] = working_data['SELLER_1_FULL_NAME']
+
+        # Remove the word if the pattern matches:
+        # firm_structure_abbrv (eg. LLC & INC), state_patterns (eg. Texas & TX),
+        # roman_numeral_patterns (III & I I I)
+        for pat_key_pair in [
+            data_dicts.firm_structure_abbrv,
+            data_dicts.state_patterns,
+            data_dicts.roman_numeral_patterns
+        ]:
+            for pat, _ in pat_key_pair:
+                working_data['BLDR_CLEANED'] = working_data['BLDR_CLEANED']\
+                    .str.replace(pat, '', regex=True)
+
+        # strip extra spaces after each word
+        working_data['BLDR_CLEANED'] = working_data['BLDR_CLEANED']\
+            .str.replace(r'\s+', ' ', regex=True).str.strip()
+
+        # remove ending chars (we know some have single char at the second or third place from the end, but we play it safe)
+        working_data['BLDR_CLEANED'] = working_data['BLDR_CLEANED']\
+            .str.replace(r'\s[A-Z]$', '', regex=True)
+
+        # Align words with abbreviations: general_abbrv
+        for pat, abbrv in data_dicts.general_abbrv:
+            working_data['BLDR_CLEANED'] = working_data['BLDR_CLEANED']\
+                .str.replace(pat, abbrv, regex=True)
+
+        return working_data
+
     def __deed_filter(self, data) -> pd.DataFrame:
         '''
         This largely follows Jaimie's (jaimie.choi@duke.edu) NewClean.py
-            > remove Non-Arms Length (interfamily)
-            > restrict to only single family, condominium, and duplex homes
-            > remove foreclosure sales and any transaction made against the home
+        > remove Non-Arms Length (interfamily)
+        > restrict to only single family, condominium, and duplex homes
+        > remove foreclosure sales and any transaction made against the home
 
         Parameters
         ----------
@@ -492,11 +594,11 @@ class Preprocess():
         data = data[data['INTERFAMILY_RELATED_IND'] == '0']
         # A: 'Arms Length Transaction', B-C: 'Non Arms Length' (pri-cat-code in old codebook)
         data = data[data['PRIMARY_CATEGORY_CODE'] == 'A']
-        # Remove if first 10 characters are identical for seller and buyer name
+        # Remove if first 10 characters are identical for seller and buyer name (but ignore the case when both are "OWNER RECORD")
         data = data[
             (data['SELLER_1_FULL_NAME'].str[0:10] != data['BUYER_1_FULL_NAME'].str[0:10]) |
             ((data['SELLER_1_FULL_NAME'] == 'OWNER RECORD') | (data['BUYER_1_FULL_NAME'] == 'OWNER RECORD'))
-        ] # 其實有點不懂為甚麼要特別把owner record放這
+        ]
 
         # Remove foreclosure and government-to-private party transactions (REO-nominal, REO Sale: Gov to private party)
         data = data[(data['FORECLOSURE_REO_IND'] == '0') & (data['FORECLOSURE_REO_SALE_IND'] == '0')]
@@ -581,6 +683,9 @@ class Preprocess():
 
         cleaned_deed = pd.concat(to_cat, ignore_index=True)
 
+        # clean the seller names
+        cleaned_deed = self.__clean_firm_name(cleaned_deed)
+
         # combine APN and its seq. number to make new APN (not sure if needed tho)
         cleaned_deed['APN'] = cleaned_deed['APN'] + cleaned_deed['APN_SEQUENCE_NUMBER']
         cleaned_deed = cleaned_deed.drop(['APN_SEQUENCE_NUMBER'], axis=1)
@@ -597,6 +702,11 @@ class Preprocess():
 
         # give each record a unique id, for later process after merging with tax
         cleaned_deed['uid'] = cleaned_deed.index
+
+
+        # TODO:
+        # after grouping names, check regionally, if there are some big firms in an area that has only one record,
+        # this record should use its original name.
 
         return cleaned_deed
 
@@ -840,10 +950,13 @@ class Preprocess():
             'TOTAL_BATHROOMS_ALL_BUILDINGS', 'NUMBER_OF_BATHROOMS',
             'NUMBER_OF_UNITS', 'UNIVERSAL_BUILDING_SQ_FT', 'BUILDING_SQ_FT',
             'LIVING_SQ_FT_ALL_BUILDINGS', 'BUILDING_GROSS_SQ_FT',
-            'ADJUSTED_GROSS_SQ_FT', 'year_diff']
+            'ADJUSTED_GROSS_SQ_FT']
         '''
 
 
+# ========================
+#  Main Process Functions
+# ========================
 def data_checking():
     '''
     This function does some basic checking of the downloaded data before
@@ -880,6 +993,13 @@ def data_checking():
 
     # ck.clip_apn_bijection(['06037'])
 
+    deed_spec = {
+        'RESALE INDICATOR': 'category',
+        'NEW CONSTRUCTION INDICATOR': 'category',
+        'SELLER 1 FULL NAME': 'str'
+    }
+    ck.bulkcheck_deed_company_name(deed_spec, os.path.join(TEMP_PATH, "name_list_eg.csv"))
+
     print("Checking done!!!")
 
 
@@ -897,7 +1017,21 @@ def data_processing(deed_spec, tax_spec):
         log_name=log, type_spec_d=deed_spec, type_spec_t=tax_spec
     )
 
-    p.merge_n_save_by_fips(CLEANED_PATH, test_n_fips=0)
+    # ====== Testing =======
+    filepath = os.path.join(p.data_paths['deed'], p.util.deed_file_fullname('01001'))
+    temp = p.single_deed_clean(filepath)
+
+    some_cond = temp['BUILDER_IDENTIFIED'] == 'OTHER'
+    print(temp.loc[some_cond, ['SELLER_1_FULL_NAME','BLDR_CLEANED']])
+    # ====== Testing =======
+
+    # Deed out columns
+    # ['CLIP', 'APN', 'LAND_USE_CODE', 'MOBILE_HOME_IND',
+    #  'PRIMARY_CATEGORY_CODE', 'DEED_CATEGORY_TYPE_CODE', 'SALE_AMOUNT',
+    #  'BUYER_1_FULL_NAME', 'SELLER_1_FULL_NAME', 'SALE_DATE', 'NEW_HOME_ORIG',
+    #  'BUILDER_IDENTIFIED', 'SALE_YEAR', 'uid']
+
+    # p.merge_n_save_by_fips(CLEANED_PATH, test_n_fips=0)
 
     print("Process done!!")
 
@@ -950,13 +1084,26 @@ def main():
     # ===============
     #  Data Checking
     # ===============
-
     # data_checking()
 
     # =================
     #  Data Processing
     # =================
     data_processing(deed_spec, tax_spec)
+
+    # ==== Temp ====
+    # TODO: check only the firm names more than n count and not in the top company list
+    # tmp = pd.read_csv(os.path.join(TEMP_PATH, 'name_list_eg.csv'))
+    # tmp = tmp[tmp['Count'] > 100]
+    # tmp.to_csv(os.path.join(TEMP_PATH, 'name_list_eg_2up.csv'), index=False)
+
+    # combine the top 200 list from different sources.
+    # df1 = pd.read_csv("output/top200builders2024_1.csv")
+    # df2 = pd.read_csv("output/top200builders2024_2.csv")
+
+    # full_list = pd.concat([df1['Company'], df2['Company']], ignore_index=True)
+    # full_list = full_list.drop_duplicates()
+    # full_list.to_csv("output/topbuilderlist_combined.csv", index=False)
 
 
 if __name__ == "__main__":
