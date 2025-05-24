@@ -1,5 +1,8 @@
+beautifulsoup4==4.13.3
 bokeh==3.6.1
 certifi==2024.8.30
+chardet==5.2.0
+charset-normalizer==3.4.1
 click==8.1.7
 cloudpickle==3.0.0
 colorama==0.4.6
@@ -12,7 +15,8 @@ et-xmlfile==1.1.0
 fonttools==4.53.1
 fsspec==2024.6.1
 geopandas==1.0.1
-Jinja2==3.1.4
+idna==3.10
+Jinja2==3.1.6
 kiwisolver==1.4.5
 locket==1.0.0
 lz4==4.3.3
@@ -22,7 +26,7 @@ msgpack==1.1.0
 numpy==2.1.0
 openpyxl==3.1.5
 packaging==24.1
-pandas==2.2.2
+pandas==2.2.3
 partd==1.4.2
 pillow==10.4.0
 psutil==6.1.0
@@ -34,14 +38,17 @@ python-dateutil==2.9.0.post0
 pytz==2024.1
 PyYAML==6.0.2
 RapidFuzz==3.10.1
+requests==2.32.3
 seaborn==0.13.2
 shapely==2.0.6
 six==1.16.0
 sortedcontainers==2.4.0
+soupsieve==2.6
 tblib==3.0.0
 toolz==0.12.1
-tornado==6.4.1
+tornado==6.5
 tqdm==4.66.5
+typing_extensions==4.12.2
 tzdata==2024.1
 urllib3==2.2.3
 xyzservices==2024.9.0
